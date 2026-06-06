@@ -433,9 +433,54 @@ async def test_experiments_active_row_reported(empty_db):
     assert len(data["active_experiments"]) == 1
     exp = data["active_experiments"][0]
     assert exp["phase"] == "gathering"
-    assert exp["name"] == "Test exp"
+    # name carried user-authored free text (PHI); it was removed (audit C1).
+    assert "name" not in exp
     # No user_id field leaks out of the endpoint.
     assert "user_id" not in exp
+
+
+@pytest.mark.asyncio
+async def test_experiments_does_not_leak_user_authored_name(empty_db):
+    """Regression (audit C1 / MEL-45 class): the unauthenticated
+    /ops/ml/experiments endpoint must never echo the user-authored
+    experiment_name, which is PHI (users name experiments after conditions,
+    meds, and context).
+    """
+    from app.models.ml_experiments import MLExperiment
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    secret = "cut caffeine for my afib"
+    empty_db.add(
+        MLExperiment(
+            user_id="u1",
+            experiment_name=secret,
+            hypothesis=None,
+            treatment_metric="dinner_hour",
+            outcome_metric="sleep_efficiency",
+            design="ab",
+            baseline_days=14,
+            treatment_days=14,
+            washout_days=3,
+            min_compliance=10,
+            status="baseline",
+            started_at=now - timedelta(days=3),
+            baseline_end="2026-04-20",
+            treatment_start="2026-04-23",
+            treatment_end="2026-05-07",
+        )
+    )
+    await empty_db.commit()
+
+    resp = await _get("/ops/ml/experiments", db_session=empty_db)
+    assert resp.status_code == 200
+    # The user-authored free text must not appear anywhere in the response.
+    assert secret not in resp.text
+    data = resp.json()
+    assert len(data["active_experiments"]) == 1
+    exp = data["active_experiments"][0]
+    assert "name" not in exp
+    assert "user_id" not in exp
+    assert exp["phase"] == "gathering"
 
 
 # -- /ops/ml/retrain-readiness --

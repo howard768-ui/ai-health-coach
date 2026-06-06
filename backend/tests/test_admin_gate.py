@@ -146,3 +146,45 @@ async def test_user_id_containing_admin_id_does_not_match(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         await get_current_admin_user(user=_make_user("evil-brock-id-attacker"))
     assert exc.value.status_code == 403
+
+
+# ── webhook admin endpoints must be gated by CurrentAdminUser ──────────
+
+
+def _dependency_callables(dependant) -> set:
+    """Flatten a FastAPI route dependant tree into the set of callables."""
+    calls: set = set()
+    stack = [dependant]
+    while stack:
+        d = stack.pop()
+        if d.call is not None:
+            calls.add(d.call)
+        stack.extend(d.dependencies)
+    return calls
+
+
+def _find_route(app, suffix: str, method: str):
+    for r in app.routes:
+        if getattr(r, "path", "").endswith(suffix) and method in getattr(
+            r, "methods", set()
+        ):
+            return r
+    return None
+
+
+@pytest.mark.parametrize(
+    "suffix,method",
+    [("/oura/register", "POST"), ("/oura/subscriptions", "GET")],
+)
+def test_webhook_admin_endpoints_require_admin(suffix, method):
+    """Audit A5: the Oura webhook register/list endpoints are admin actions
+    (they can repoint webhooks). They must resolve get_current_admin_user, not
+    just get_current_user, so a plain beta tester cannot reach them.
+    """
+    from app.main import app
+    from app.api.deps import get_current_admin_user
+
+    route = _find_route(app, suffix, method)
+    assert route is not None, f"route {method} ...{suffix} not found"
+    calls = _dependency_callables(route.dependant)
+    assert get_current_admin_user in calls, f"...{suffix} is not admin-gated"

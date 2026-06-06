@@ -48,6 +48,13 @@ _SOURCE_TABLES: dict[str, tuple[str, str]] = {
     "apple_health": ("activity_records", "synced_at"),
 }
 
+# Defense-in-depth allowlists for the f-string SQL in _source_freshness.
+# Identifiers cannot be bound as parameters, so if anyone ever wires this dict
+# to runtime input, these assertions trip before the query is built. Mirrors
+# the same guard in ops.py.
+_ALLOWED_TABLES: frozenset[str] = frozenset(t for t, _ in _SOURCE_TABLES.values())
+_ALLOWED_COLUMNS: frozenset[str] = frozenset(c for _, c in _SOURCE_TABLES.values())
+
 
 # -- Response models --
 
@@ -89,10 +96,12 @@ class FeatureDriftResponse(BaseModel):
 
 class ActiveExperiment(BaseModel):
     id: int
-    name: str
     phase: str
     days_active: int
     users_enrolled: int
+    # NOTE: no ``name`` field. experiment_name is user-authored free text (PHI:
+    # users name experiments after conditions/meds) and this endpoint is public.
+    # See audit C1 / the MEL-39/MEL-45 "no per-user content on /ops" rule.
 
 
 class ExperimentsResponse(BaseModel):
@@ -276,6 +285,11 @@ async def _source_freshness(
     stale: int | None = None
     count: int | None = None
 
+    # Identifiers are interpolated (cannot be bound). Assert they come from the
+    # static allowlist so a future wiring to runtime input fails closed here.
+    assert table in _ALLOWED_TABLES, f"unknown table: {table!r}"
+    assert col in _ALLOWED_COLUMNS, f"unknown column: {col!r}"
+
     # last_ingest
     try:
         val = await _scalar_or_none(db, f"SELECT MAX({col}) FROM {table}")  # noqa: S608
@@ -456,7 +470,8 @@ def _experiment_phase_from_status(status: str | None) -> str:
         return "gathering"
     if status == "analyzing":
         return "analyzing"
-    return status
+    # Do not echo unmapped internal status labels on a public endpoint.
+    return "unknown"
 
 
 @router.get("/experiments", response_model=ExperimentsResponse)
@@ -472,9 +487,11 @@ async def experiments(db: AsyncSession = Depends(get_db)) -> ExperimentsResponse
     completed_30d = 0
 
     try:
+        # Do NOT select experiment_name: it is user-authored PHI and this
+        # endpoint is unauthenticated (audit C1). Only non-identifying metadata.
         result = await db.execute(
             text(
-                "SELECT id, experiment_name, status, started_at "
+                "SELECT id, status, started_at "
                 "FROM ml_experiments "
                 "WHERE status IN ('baseline','washout_1','treatment','analyzing') "
                 "ORDER BY started_at DESC"
@@ -486,26 +503,17 @@ async def experiments(db: AsyncSession = Depends(get_db)) -> ExperimentsResponse
         rows = []
 
     for row in rows:
-        started_iso = _iso(row[3])
+        started_iso = _iso(row[2])
         days_active = _days_between(started_iso, now) or 0
-        enrolled = 0
-        try:
-            cnt = await _scalar_or_none(
-                db,
-                "SELECT COUNT(DISTINCT user_id) FROM ml_experiments WHERE id = :i",
-                i=row[0],
-            )
-            enrolled = int(cnt or 0)
-        except Exception:
-            await db.rollback()
-            enrolled = 0
+        # ml_experiments.id is the primary key, so each active row is exactly one
+        # user: users_enrolled is structurally 1. Computing it with a per-row
+        # COUNT(DISTINCT user_id) was an N+1 on an unauthenticated endpoint.
         active.append(
             ActiveExperiment(
                 id=int(row[0]),
-                name=str(row[1] or ""),
-                phase=_experiment_phase_from_status(row[2]),
+                phase=_experiment_phase_from_status(row[1]),
                 days_active=days_active,
-                users_enrolled=enrolled,
+                users_enrolled=1,
             )
         )
 

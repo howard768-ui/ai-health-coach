@@ -49,7 +49,8 @@ class SleepRecord(Base):
     readiness_score: Mapped[int] = mapped_column(Integer, nullable=True)
     bedtime_start: Mapped[str] = mapped_column(String(5), nullable=True)  # HH:MM when user fell asleep
     bedtime_end: Mapped[str] = mapped_column(String(5), nullable=True)    # HH:MM when user woke up
-    raw_json: Mapped[str] = mapped_column(Text, nullable=True)
+    # PHI: full raw vendor sleep payload. Encrypted at rest (audit C2).
+    raw_json: Mapped[str] = mapped_column(EncryptedString(), nullable=True)
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     # Phase 4.5 synth-factory tag. Default False for all real ingestion paths.
     # Crisis evals and production aggregates MUST filter on is_synthetic = False.

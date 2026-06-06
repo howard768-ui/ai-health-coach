@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import String, Integer, Float, DateTime, Text
+from sqlalchemy import String, Integer, Float, DateTime
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.encryption import EncryptedString
@@ -54,5 +54,6 @@ class WorkoutRecord(Base):
     avg_output: Mapped[float] = mapped_column(Float, nullable=True)  # Watts (Peloton-specific)
     instructor: Mapped[str] = mapped_column(String(100), nullable=True)
     title: Mapped[str] = mapped_column(String(255), nullable=True)
-    raw_json: Mapped[str] = mapped_column(Text, nullable=True)
+    # PHI: full raw vendor workout payload. Encrypted at rest (audit C2).
+    raw_json: Mapped[str] = mapped_column(EncryptedString(), nullable=True)
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)

@@ -16,6 +16,7 @@ from cryptography.fernet import Fernet  # noqa: E402
 
 from app.config import settings  # noqa: E402
 from app.core.encryption import (  # noqa: E402
+    EncryptionConfigError,
     _get_cipher,
     _reset_for_tests,
     decrypt,
@@ -148,3 +149,36 @@ def test_missing_key_warns_only_once(caplog):
 
     warn_records = [r for r in caplog.records if "ENCRYPTION_KEY not set" in r.message]
     assert len(warn_records) == 1, "warning should dedupe, not spam per call"
+
+
+# ── fail closed in production (audit H3) ──────────────────────────────
+
+
+def test_prod_missing_key_raises():
+    """Production must never silently store PHI in plaintext: a missing key
+    raises instead of falling through."""
+    settings.app_env = "production"
+    settings.encryption_key = ""
+    _reset_for_tests()
+    with pytest.raises(EncryptionConfigError):
+        encrypt("phi-value")
+
+
+def test_prod_malformed_key_raises():
+    """A non-empty but unparseable key (passes the non-whitespace startup
+    check, fails Fernet) must also fail closed in production, not plaintext."""
+    settings.app_env = "production"
+    settings.encryption_key = "this-is-not-a-valid-fernet-key"
+    _reset_for_tests()
+    with pytest.raises(EncryptionConfigError):
+        decrypt("anything")
+
+
+def test_dev_missing_key_still_falls_back_to_plaintext():
+    """Non-production keeps the legacy plaintext fallback so local dev with no
+    secrets works."""
+    settings.app_env = "development"
+    settings.encryption_key = ""
+    _reset_for_tests()
+    assert encrypt("phi-value") == "phi-value"
+    assert decrypt("phi-value") == "phi-value"

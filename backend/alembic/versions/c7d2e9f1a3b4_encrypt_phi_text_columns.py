@@ -45,10 +45,24 @@ depends_on: Union[str, Sequence[str], None] = None
 _TARGETS: list[tuple[str, str]] = [
     ("chat_messages", "content"),
     ("chat_messages", "health_context"),
+    ("users", "custom_goal_text"),
     ("sleep_records", "raw_json"),
     ("garmin_daily_records", "raw_json"),
     ("workout_records", "raw_json"),
 ]
+
+# KNOWN CONSTRAINTS (tracked follow-ups, not gating this PR):
+#  - Key rotation: these columns are append-only (never re-saved), so they do
+#    NOT drain a retired key the way refreshing OAuth tokens do. Before removing
+#    any retired key from ENCRYPTION_KEY, run a re-encrypt pass over _TARGETS
+#    first, or historical rows become undecryptable. Document in the rotation
+#    runbook.
+#  - Idempotency holds for a single active key (already-encrypted rows are
+#    skipped). Re-running after a key rotation that DROPS a key can re-encrypt
+#    rows that no longer decrypt; gate that on the re-encrypt pass above.
+#  - Batching: this does fetchall()+per-row UPDATE in one transaction. Prod is
+#    single-user today so this is fine; chunk by id keyset before any large
+#    backfill (e.g. post-launch growth).
 
 
 def _is_ciphertext(cipher, value: str) -> bool:

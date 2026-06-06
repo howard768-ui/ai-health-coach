@@ -61,7 +61,10 @@ def verify_secrets_configured() -> None:
     do not model FastAPI lifespan as a CALLS edge, so impact tools that
     only look at the call graph will report this as orphaned. It is not.
     """
-    is_prod = settings.app_env == "production"
+    # Fail closed for every non-development environment, not just the exact
+    # string "production" (staging/preview hold real PHI; a misspelled APP_ENV
+    # must not skip the gate). Mirrors the same rule in core/encryption.py.
+    is_prod = settings.app_env.strip().lower() not in ("development", "test")
 
     critical_missing: list[str] = []
     if not _is_set(settings.jwt_secret_key):

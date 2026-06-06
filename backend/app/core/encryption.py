@@ -95,7 +95,12 @@ def _get_cipher() -> Optional[MultiFernet]:
         return _cipher
 
     raw = settings.encryption_key or ""
-    is_prod = settings.app_env == "production"
+    # Fail closed for EVERY non-development environment, not just the exact
+    # string "production". Staging/preview hold real or copied PHI, and a
+    # misspelled APP_ENV ("prod", "Production") must not silently disable
+    # encryption. Only development and test get the plaintext fallback. Matches
+    # the "anything but development is a serious env" rule already in config.py.
+    is_prod = settings.app_env.strip().lower() not in ("development", "test")
 
     if not raw:
         if is_prod:
@@ -174,10 +179,15 @@ def decrypt(ciphertext: str | None) -> str | None:
     try:
         return cipher.decrypt(ciphertext.encode()).decode()
     except InvalidToken:
+        # Do NOT log any slice of the value: once PHI columns route through
+        # EncryptedString, a legacy plaintext row's first chars would be real
+        # chat/health content. Log only non-content discriminators. A
+        # Fernet-shaped value that misses (looks_fernet=True) is a drained-key
+        # or tampered row, not legacy plaintext, and is worth alerting on.
         logger.warning(
-            "encryption.decrypt_miss len=%d prefix=%r",
+            "encryption.decrypt_miss len=%d looks_fernet=%s",
             len(ciphertext),
-            ciphertext[:6],
+            ciphertext.startswith("gAAAAA"),
         )
         return ciphertext
     except (ValueError, UnicodeDecodeError) as e:

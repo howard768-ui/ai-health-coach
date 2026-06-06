@@ -25,7 +25,10 @@ from app.config import settings
 from app.core import encryption
 from app.database import Base
 from app.models.chat import ChatMessageRecord
+from app.models.garmin import GarminDailyRecord
 from app.models.health import SleepRecord
+from app.models.peloton import WorkoutRecord
+from app.models.user import User
 
 
 @pytest_asyncio.fixture
@@ -106,3 +109,35 @@ async def test_health_context_and_raw_json_encrypted_at_rest(session):
     assert raw_json != payload
     assert "hrv" not in raw_json
     assert encryption.decrypt(raw_json) == payload
+
+
+@pytest.mark.asyncio
+async def test_garmin_peloton_rawjson_and_custom_goal_encrypted_at_rest(session):
+    g_payload = '{"stress": 42, "body_battery": 77}'
+    g = GarminDailyRecord(user_id="u1", date="2026-06-06", raw_json=g_payload)
+    p_payload = '{"output": 210, "instructor": "Ally"}'
+    p = WorkoutRecord(
+        user_id="u1",
+        date="2026-06-06",
+        source="peloton",
+        workout_type="cycling",
+        duration_seconds=1800,
+        raw_json=p_payload,
+    )
+    goal = "manage my afib and lose 15 lbs before the wedding"
+    u = User(apple_user_id="001234.deadbeef.0001", custom_goal_text=goal)
+    session.add_all([g, p, u])
+    await session.commit()
+
+    for table, col, plaintext, rid in [
+        ("garmin_daily_records", "raw_json", g_payload, g.id),
+        ("workout_records", "raw_json", p_payload, p.id),
+        ("users", "custom_goal_text", goal, u.id),
+    ]:
+        raw = (
+            await session.execute(
+                text(f"SELECT {col} FROM {table} WHERE id = :i"), {"i": rid}
+            )
+        ).scalar_one()
+        assert raw != plaintext, f"{table}.{col} stored plaintext"
+        assert encryption.decrypt(raw) == plaintext, f"{table}.{col} did not round-trip"

@@ -29,7 +29,10 @@ class ChatMessageRecord(Base):
     routing_reason: Mapped[str] = mapped_column(String(255), nullable=True)
     model_used: Mapped[str] = mapped_column(String(100), nullable=True)
     safety_flagged: Mapped[bool] = mapped_column(default=False)
-    metadata_json: Mapped[str] = mapped_column(JSON, nullable=True)  # Extra context
+    # Extra context. NOTE: currently non-PHI. If a future writer ever puts PHI
+    # here, it must be encrypted (e.g. an EncryptedJSON type or pre-encrypt the
+    # serialized value); a plain JSON column is plaintext at rest (audit C2).
+    metadata_json: Mapped[str] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
     # Phase 4: Production monitoring

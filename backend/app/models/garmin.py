@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import String, Integer, Float, DateTime, Text
+from sqlalchemy import String, Integer, Float, DateTime
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.encryption import EncryptedString
@@ -35,5 +35,6 @@ class GarminDailyRecord(Base):
     body_battery_high: Mapped[int] = mapped_column(Integer, nullable=True)
     body_battery_low: Mapped[int] = mapped_column(Integer, nullable=True)
     active_minutes: Mapped[int] = mapped_column(Integer, nullable=True)
-    raw_json: Mapped[str] = mapped_column(Text, nullable=True)
+    # PHI: full raw vendor payload. Encrypted at rest (audit C2).
+    raw_json: Mapped[str] = mapped_column(EncryptedString(), nullable=True)
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)

@@ -1,8 +1,9 @@
 from datetime import datetime
-from sqlalchemy import String, Integer, Float, DateTime, Text, JSON
+from sqlalchemy import String, Integer, Float, DateTime, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+from app.core.encryption import EncryptedString
 from app.core.time import utcnow_naive
 
 
@@ -22,12 +23,16 @@ class ChatMessageRecord(Base):
     conversation_id: Mapped[int] = mapped_column(Integer, index=True)
     user_id: Mapped[str] = mapped_column(String(255), index=True)
     role: Mapped[str] = mapped_column(String(20))  # "user" or "coach"
-    content: Mapped[str] = mapped_column(Text)
+    # PHI: the actual user<->coach conversation. Encrypted at rest (audit C2).
+    content: Mapped[str] = mapped_column(EncryptedString())
     routing_tier: Mapped[str] = mapped_column(String(20), nullable=True)  # rules/sonnet/opus
     routing_reason: Mapped[str] = mapped_column(String(255), nullable=True)
     model_used: Mapped[str] = mapped_column(String(100), nullable=True)
     safety_flagged: Mapped[bool] = mapped_column(default=False)
-    metadata_json: Mapped[str] = mapped_column(JSON, nullable=True)  # Extra context
+    # Extra context. NOTE: currently non-PHI. If a future writer ever puts PHI
+    # here, it must be encrypted (e.g. an EncryptedJSON type or pre-encrypt the
+    # serialized value); a plain JSON column is plaintext at rest (audit C2).
+    metadata_json: Mapped[str] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
     # Phase 4: Production monitoring
@@ -37,4 +42,5 @@ class ChatMessageRecord(Base):
     input_tokens: Mapped[int] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int] = mapped_column(Integer, nullable=True)
     prompt_version: Mapped[str] = mapped_column(String(20), nullable=True)  # A/B test variant
-    health_context: Mapped[str] = mapped_column(Text, nullable=True)  # Health data sent to model
+    # PHI: health data snapshot sent to the model. Encrypted at rest (audit C2).
+    health_context: Mapped[str] = mapped_column(EncryptedString(), nullable=True)

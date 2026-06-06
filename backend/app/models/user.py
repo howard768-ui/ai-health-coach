@@ -3,6 +3,7 @@ from sqlalchemy import String, Integer, Float, DateTime, Text, JSON, Boolean
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+from app.core.encryption import EncryptedString
 from app.core.time import utcnow_naive
 
 
@@ -24,7 +25,9 @@ class User(Base):
     # Goals step. Not required, but fed into the coach system prompt as additional
     # personalization context so it can address the user's actual situation rather
     # than only the canned chip goals.
-    custom_goal_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # PHI: free-form personal context fed into the coach prompt. Encrypted at
+    # rest (audit C2).
+    custom_goal_text: Mapped[str | None] = mapped_column(EncryptedString(), nullable=True)
     training_experience: Mapped[str] = mapped_column(String(50), nullable=True)
     training_days_per_week: Mapped[int] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)

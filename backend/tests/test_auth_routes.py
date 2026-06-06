@@ -23,7 +23,7 @@ import jwt
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -39,6 +39,21 @@ from app.database import Base, get_db
 from app.main import app
 from app.models.user import User
 from app.routers import auth_apple as auth_apple_module
+
+# Import the per-user PHI model modules so their tables are registered in
+# Base.metadata and created by the test engine. These are the tables that have
+# no FK to users (so they are NOT covered by cascade) and must be explicitly
+# purged on account deletion (audit A3 / round-1 critical).
+from app.models import (  # noqa: E402,F401
+    ml_baselines,
+    ml_discovery,
+    ml_features,
+    ml_insights,
+    ml_experiments,
+    ml_cohorts,
+    mascot,
+    notification,
+)
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────
@@ -321,3 +336,87 @@ async def test_delete_account_revoke_failure_still_deletes_locally(client, db_se
         await db_session.execute(select(User).where(User.apple_user_id == apple_id))
     ).scalar_one_or_none()
     assert gone is None, "local delete must run even when Apple revoke fails"
+
+
+# Per-user PHI tables that have no FK to users and so survive a plain
+# CASCADE delete. Each is (table, user_column). Account deletion must purge
+# every one of them (audit A3 / round-1 critical right-to-erasure failure).
+_UNCASCADED_PHI_TABLES = [
+    ("ml_baselines", "user_id"),
+    ("ml_change_points", "user_id"),
+    ("ml_forecasts", "user_id"),
+    ("ml_anomalies", "user_id"),
+    ("ml_directional_tests", "user_id"),
+    ("ml_causal_estimates", "user_id"),
+    ("ml_feature_values", "user_id"),
+    ("ml_insight_candidates", "user_id"),
+    ("ml_rankings", "user_id"),
+    ("ml_experiments", "user_id"),
+    ("ml_n_of_1_results", "user_id"),
+    ("user_mascot_state", "user_id"),
+    ("notification_records", "user_id"),
+]
+
+
+@pytest.mark.asyncio
+async def test_delete_account_purges_all_user_keyed_phi(client, db_session, monkeypatch):
+    """Right-to-erasure (audit A3): account deletion must remove the user's
+    rows from every per-user PHI table, not just the user row + cascaded
+    tenant tables. These ml_*/notification/mascot tables have no FK to users.
+    """
+    apple_id = "001234.purge_phi.0001"
+    await _seed_user(db_session, apple_user_id=apple_id)
+
+    # Seed a representative uncascaded row across each category: an ML table, the
+    # mascot table, and the notification table. All three have no FK to users.
+    # Use the ORM so Python-side column defaults (created_at, etc.) apply.
+    db_session.add_all(
+        [
+            ml_insights.MLRanking(
+                user_id=apple_id,
+                surface_date="2026-06-06",
+                candidate_id="cand-1",
+                rank=1,
+                score=0.9,
+                ranker_version="v1",
+                was_shown=True,
+            ),
+            mascot.UserMascotState(user_id=apple_id, accessory_id="hat"),
+            notification.NotificationRecord(
+                user_id=apple_id,
+                category="morning_brief",
+                title="hi",
+                body="your HRV is 42",
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    async def fake_revoke(refresh_token: str):
+        return None
+
+    monkeypatch.setattr(auth_apple_module, "revoke_apple_token", fake_revoke)
+
+    # /auth/delete is rate-limited by auth_apple's own limiter. The file's other
+    # delete tests consume its shared 3/minute bucket, so clear that limiter's
+    # in-memory storage to keep this 4th delete from being rejected 429.
+    for _attr in ("storage", "events", "expirations"):
+        _d = getattr(auth_apple_module.limiter._storage, _attr, None)
+        if hasattr(_d, "clear"):
+            _d.clear()
+
+    token, _ = create_access_token(apple_id)
+    resp = await client.post(
+        "/auth/delete", json={}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 200
+
+    db_session.expire_all()
+    for table in ("ml_rankings", "user_mascot_state", "notification_records"):
+        count = (
+            await db_session.execute(
+                text(f"SELECT COUNT(*) FROM {table} WHERE user_id = :u"),  # noqa: S608
+                {"u": apple_id},
+            )
+        ).scalar_one()
+        assert count == 0, f"{table} still has rows for the deleted user (PHI not erased)"

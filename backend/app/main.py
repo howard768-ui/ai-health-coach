@@ -137,6 +137,12 @@ def _init_sentry():
         profiles_sample_rate=0.1,
         environment=settings.app_env,
         send_default_pii=False,  # Never send PHI/PII to Sentry
+        # The before_send scrubber only matches a few structured patterns and
+        # cannot catch free-form chat/meal/health text. Do not capture request
+        # bodies or frame-local variables at all: on an exception in coach/meal
+        # handlers those would otherwise ship raw PHI to Sentry. Audit A4.
+        max_request_body_size="never",
+        include_local_variables=False,
         before_send=_sentry_before_send,
         integrations=integrations,
     )

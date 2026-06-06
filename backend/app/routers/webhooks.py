@@ -22,7 +22,7 @@ from app.services.oura_webhooks import (
     list_subscriptions,
 )
 
-from app.api.deps import CurrentUser
+from app.api.deps import CurrentAdminUser
 from app.core.constants import TEST_DEVICE_TOKEN
 from app.core.time import utcnow_naive
 
@@ -114,9 +114,18 @@ async def oura_webhook_receiver(request: Request, db: AsyncSession = Depends(get
     if not hasattr(oura_webhook_receiver, "_last_sync_at"):
         oura_webhook_receiver._last_sync_at = {}  # type: ignore[attr-defined]
     last_sync_map = oura_webhook_receiver._last_sync_at  # type: ignore[attr-defined]
-    last = last_sync_map.get(user_oura_id)
     now = utcnow_naive()
-    if last and (now - last) < timedelta(seconds=60):
+    window = timedelta(seconds=60)
+    # Evict entries older than the throttle window. The key is the
+    # attacker-supplied Oura user_id; without eviction this map grows unbounded
+    # (memory-growth DoS). Entries past the window carry no throttle meaning, so
+    # pruning them bounds the map to users seen within the last 60s.
+    cutoff = now - window
+    stale = [k for k, ts in last_sync_map.items() if ts < cutoff]
+    for k in stale:
+        del last_sync_map[k]
+    last = last_sync_map.get(user_oura_id)
+    if last and (now - last) < window:
         logger.info("Oura webhook throttled (last sync %ds ago)", (now - last).seconds)
         return {"status": "throttled"}
     last_sync_map[user_oura_id] = now
@@ -265,7 +274,7 @@ async def oura_webhook_receiver(request: Request, db: AsyncSession = Depends(get
 
 @router.post("/oura/register")
 async def register_webhooks(
-    current_user: CurrentUser,
+    current_user: CurrentAdminUser,
     base_url: str = Query(...),
 ):
     """Register all Oura webhook subscriptions.
@@ -303,7 +312,7 @@ async def register_webhooks(
 
 
 @router.get("/oura/subscriptions")
-async def get_subscriptions(current_user: CurrentUser):
+async def get_subscriptions(current_user: CurrentAdminUser):
     """List all active Oura webhook subscriptions (admin endpoint)."""
     try:
         subs = await list_subscriptions()

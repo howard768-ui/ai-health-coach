@@ -4,16 +4,32 @@ on:
   # Run on PRs that touch the prompt or coach engine
   pull_request:
     paths:
+      # Coach prompt + the surfaces that shape coach/safety output. Audit B2:
+      # the eval suite was path-gated to only the prompt file, so coach-safety
+      # regressions from adjacent files could merge without running the evals.
       - 'backend/app/services/coach_engine.py'
       - 'backend/app/services/claude.py'
+      - 'backend/app/services/content_blocks.py'
+      - 'backend/app/services/notification_content.py'
+      - 'backend/app/services/notification_engine.py'
+      - 'backend/app/services/notification_safety.py'
+      - 'backend/app/routers/coach.py'
       - 'evals/**'
 
   # Run on pushes to main (same paths)
   push:
     branches: [main]
     paths:
+      # Coach prompt + the surfaces that shape coach/safety output. Audit B2:
+      # the eval suite was path-gated to only the prompt file, so coach-safety
+      # regressions from adjacent files could merge without running the evals.
       - 'backend/app/services/coach_engine.py'
       - 'backend/app/services/claude.py'
+      - 'backend/app/services/content_blocks.py'
+      - 'backend/app/services/notification_content.py'
+      - 'backend/app/services/notification_engine.py'
+      - 'backend/app/services/notification_safety.py'
+      - 'backend/app/routers/coach.py'
       - 'evals/**'
 
   # Manual trigger

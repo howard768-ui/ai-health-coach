@@ -6,10 +6,9 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import select, desc
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 
 from app.api.deps import CurrentUser
+from app.core.ratelimit import limiter
 from app.database import get_db
 from app.models.chat import Conversation, ChatMessageRecord
 from app.models.user import User
@@ -27,8 +26,9 @@ from app.core.time import utcnow_naive
 
 logger = logging.getLogger("meld.coach")
 
-# Rate limit AI endpoints to prevent Claude API budget exhaustion (P1-4)
-limiter = Limiter(key_func=get_remote_address)
+# Rate limit AI endpoints to prevent Claude API budget exhaustion (P1-4).
+# Uses the single shared limiter (app.core.ratelimit), keyed on the real client
+# IP, not the Cloudflare edge IP. Audit C2.
 
 router = APIRouter(prefix="/api/coach", tags=["coach"])
 

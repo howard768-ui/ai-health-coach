@@ -24,8 +24,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from slowapi import Limiter
-from slowapi.util import get_remote_address
+from app.core.ratelimit import limiter
 
 from app.api.deps import CurrentUser
 from app.core.apple import (
@@ -51,7 +50,8 @@ logger = logging.getLogger("meld.auth")
 # Per-IP rate limiter shared across auth endpoints. Tighter than the
 # global default — auth endpoints are the highest-value attack surface
 # (brute force, token enumeration, cost exhaustion via Apple JWT verify).
-limiter = Limiter(key_func=get_remote_address)
+# Uses the single shared limiter (app.core.ratelimit), keyed on the real client
+# IP, not the Cloudflare edge IP. Audit C2.
 
 
 # ── Request / Response Schemas ───────────────────────────────────────────────

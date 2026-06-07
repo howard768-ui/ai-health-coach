@@ -9,10 +9,9 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 
 from app.api.deps import CurrentUser
+from app.core.ratelimit import limiter
 from app.core.time import user_hour, user_today_iso
 from app.database import get_db
 from app.models.meal import MealRecord, FoodItemRecord
@@ -30,8 +29,9 @@ logger = logging.getLogger("meld.meals")
 
 router = APIRouter(prefix="/api", tags=["meals"])
 
-# Rate limit AI-backed food recognition to prevent budget exhaustion (P1-4)
-limiter = Limiter(key_func=get_remote_address)
+# Rate limit AI-backed food recognition to prevent budget exhaustion (P1-4).
+# Uses the single shared limiter (app.core.ratelimit), keyed on the real client
+# IP, not the Cloudflare edge IP. Audit C2.
 
 
 def _meal_type_from_time() -> str:

@@ -21,7 +21,7 @@ import httpx
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from slowapi import Limiter
@@ -315,6 +315,32 @@ async def logout(
 # ── POST /auth/delete ────────────────────────────────────────────────────────
 
 
+# Per-user PHI tables keyed by user_id that have NO foreign key to users, so a
+# CASCADE delete of the user row does not remove them. These must be purged
+# explicitly on account deletion (audit A3 / round-1 critical right-to-erasure).
+# Cohort data (ml_anonymized_vectors / ml_cohort_consent) is handled separately
+# via ml.api.delete_cohort_vectors because it is keyed by an encrypted pseudonym.
+# Raw table names (no ORM import) keep the ML import boundary clean, matching
+# the ml_ops.py pattern.
+_PER_USER_PHI_TABLES_NO_FK = (
+    "ml_baselines",
+    "ml_change_points",
+    "ml_forecasts",
+    "ml_anomalies",
+    "ml_directional_tests",
+    "ml_causal_estimates",
+    "ml_feature_values",
+    "ml_insight_candidates",
+    "ml_rankings",
+    "ml_experiments",
+    "ml_n_of_1_results",
+    "user_mascot_state",
+    "notification_records",
+    "device_tokens",
+    "notification_preferences",
+)
+
+
 @router.post("/delete")
 @limiter.limit("3/minute")
 async def delete_account(
@@ -329,8 +355,10 @@ async def delete_account(
     Steps:
     1. Call Apple's /auth/revoke with the user's Apple refresh token (if we
        have one captured from the original sign-in).
-    2. DELETE the user row — CASCADE removes all tenant data across the 13
-       tables per the FK migration in c0518b5194eb.
+    2. Purge cohort vectors + every per-user PHI table that has no FK to users
+       (the ml_*/notification/mascot tables CASCADE does not reach).
+    3. DELETE the user row — CASCADE removes the FK-linked tenant tables (the
+       c0518b5194eb set), now that SQLite FK enforcement is on (see database.py).
     """
     apple_id = user.apple_user_id
     apple_refresh = user.apple_refresh_token
@@ -354,7 +382,28 @@ async def delete_account(
             except Exception:  # noqa: BLE001 -- delete continues regardless
                 logger.debug("Sentry capture failed (non-fatal)", exc_info=True)
 
-    # Delete the user — CASCADE handles all tenant data + refresh tokens.
+    # Purge cohort vectors (keyed by encrypted pseudonym) via the ML boundary.
+    # Wrap in a SAVEPOINT so a cohort-purge failure rolls back only this step
+    # and cannot poison the session for the rest of the deletion (the local
+    # delete must complete per App Store 5.1.1(v)).
+    try:
+        from ml import api as ml_api
+
+        async with db.begin_nested():
+            await ml_api.delete_cohort_vectors(db, apple_id)
+    except Exception as e:  # noqa: BLE001 -- cohort purge must not block deletion
+        logger.error("Cohort vector purge failed for user=%s: %s", apple_id[:12], e)
+
+    # Purge every per-user PHI table CASCADE does not reach. Table names are
+    # fixed constants, not user input, so the f-string is not an injection site.
+    for table in _PER_USER_PHI_TABLES_NO_FK:
+        await db.execute(
+            text(f"DELETE FROM {table} WHERE user_id = :uid"),  # noqa: S608
+            {"uid": apple_id},
+        )
+
+    # Delete the user — CASCADE handles the FK-linked tenant tables + refresh
+    # tokens (FK enforcement is on for SQLite via database.py; native on PG).
     await db.delete(user)
     await db.commit()
     logger.info("Deleted user account: %s", apple_id[:12] + "...")

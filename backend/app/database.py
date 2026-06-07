@@ -1,11 +1,31 @@
 import logging
 
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
 from app.config import settings
 
 logger = logging.getLogger("meld.database")
+
+
+@event.listens_for(Engine, "connect")
+def _enforce_sqlite_foreign_keys(dbapi_connection, connection_record):
+    """Turn on foreign-key enforcement for every SQLite connection.
+
+    SQLite ignores ``ON DELETE CASCADE`` unless ``PRAGMA foreign_keys=ON`` is
+    set per connection. Without this, account-deletion cascades silently did
+    nothing in dev and in the test suite, so the deletion tests passed while
+    deleting no child rows (audit A3). Postgres enforces FKs natively, so this
+    is scoped to SQLite by inspecting the DBAPI module. Registered on the
+    generic Engine so it also applies to the per-test in-memory engines.
+    """
+    module = type(dbapi_connection).__module__.lower()
+    if "sqlite" in module:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
 # pool_pre_ping: cheap SELECT 1 before each checkout, evicts dead connections
 # left over from a Postgres restart or network blip. Without it, the first

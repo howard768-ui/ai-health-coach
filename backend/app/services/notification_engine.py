@@ -14,6 +14,7 @@ import anthropic
 
 from app.services.coach_engine import CoachEngine
 from app.services.notification_media import generate_recovery_badge
+from app.services.notification_safety import safe_notification_text
 from app.core.time import utcnow_naive
 
 logger = logging.getLogger("meld.notifications")
@@ -92,9 +93,11 @@ class NotificationEngine:
                 title = content.get("title", f"Good morning, {user_name}")
                 body = content.get("body", "Your coach has an update for you.")
             except (json.JSONDecodeError, KeyError):
-                # Fallback: use the response as body
+                # Do NOT dump the raw model response to the lock screen (it can
+                # contain raw metrics / PHI). Use the static safe copy. Audit B1.
+                logger.warning("Failed to parse morning brief JSON; using safe fallback")
                 title = f"Good morning, {user_name}"
-                body = response_text[:120]
+                body = "Your coach has an update for you."
 
         except anthropic.APIError as e:
             logger.error("Failed to generate morning brief via AI: %s", e)
@@ -106,6 +109,12 @@ class NotificationEngine:
                 body = "Recovery is moderate. A lighter session might be best today."
             else:
                 body = "Your body needs some extra rest today. Easy does it."
+
+        # Deterministic safety net: never let a digit (raw metric / PHI) reach
+        # the lock screen even if the model ignored the prompt rule. Audit B1.
+        title, body = safe_notification_text(
+            title, body, f"Good morning, {user_name}", "Your coach has an update for you."
+        )
 
         # Generate recovery badge for rich notification.
         # P3-3: URLs come from settings, not hardcoded.

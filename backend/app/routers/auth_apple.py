@@ -383,10 +383,14 @@ async def delete_account(
                 logger.debug("Sentry capture failed (non-fatal)", exc_info=True)
 
     # Purge cohort vectors (keyed by encrypted pseudonym) via the ML boundary.
+    # Wrap in a SAVEPOINT so a cohort-purge failure rolls back only this step
+    # and cannot poison the session for the rest of the deletion (the local
+    # delete must complete per App Store 5.1.1(v)).
     try:
         from ml import api as ml_api
 
-        await ml_api.delete_cohort_vectors(db, apple_id)
+        async with db.begin_nested():
+            await ml_api.delete_cohort_vectors(db, apple_id)
     except Exception as e:  # noqa: BLE001 -- cohort purge must not block deletion
         logger.error("Cohort vector purge failed for user=%s: %s", apple_id[:12], e)
 

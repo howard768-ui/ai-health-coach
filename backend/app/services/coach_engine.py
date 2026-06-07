@@ -559,8 +559,14 @@ class CoachEngine:
             if custom_goal_trimmed else ""
         )
 
+        # Privacy (audit B3): do NOT send the user's real first name to the
+        # model. The privacy policy states the name is not shared with the LLM
+        # provider unless necessary, and it is not necessary for coaching. Use a
+        # generic placeholder; the prompt constant (and eval parity) are
+        # unchanged, and the `user_name` argument is retained for API
+        # compatibility but intentionally not forwarded to the model.
         system_prompt = EVIDENCE_BOUND_SYSTEM_PROMPT.format(
-            user_name=user_name,
+            user_name="the user",
             health_data=json.dumps(health_data, indent=2),
             goals=", ".join(user_goals or ["general wellness"]),
             custom_goal_context=custom_goal_context,

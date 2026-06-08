@@ -64,3 +64,27 @@ def test_keyfunc_prefers_real_client_ip_over_edge():
 def test_default_limit_configured():
     # A global baseline must exist so undecorated endpoints are not unlimited.
     assert shared_limiter._default_limits, "a global default limit must be set"
+
+
+def test_infra_endpoints_exempt_from_default_limit():
+    """Re-gate fix: health/readiness/ops endpoints must be exempt from the
+    global default, or Railway's deploy probe and monitoring get 429'd."""
+    from app.main import app  # noqa: F401 (import registers all routes/decorators)
+
+    exempt = shared_limiter._exempt_routes
+    assert any(n.endswith(".healthz") for n in exempt), exempt
+    assert any(n.endswith(".readyz") for n in exempt), exempt
+    # All ml_ops monitoring endpoints exempt.
+    assert any(".ml_ops." in n for n in exempt), exempt
+    # /ops/status exempt.
+    assert any(n.endswith("ops.status") or ".ops." in n for n in exempt), exempt
+
+
+def test_waitlist_has_explicit_limit():
+    """Re-gate fix: the public waitlist endpoint now carries its documented
+    10/minute limit instead of relying on the global default."""
+    from app.main import app  # noqa: F401
+
+    assert any("subscribe" in n for n in shared_limiter._route_limits), (
+        shared_limiter._route_limits.keys()
+    )

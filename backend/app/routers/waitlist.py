@@ -20,6 +20,7 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.ratelimit import limiter
 from app.database import get_db
 from app.models.waitlist import WaitlistSignup
 
@@ -70,6 +71,7 @@ def _client_ip(request: Request) -> str | None:
 
 
 @router.post("/subscribe", response_model=WaitlistSubscribeResponse)
+@limiter.limit("10/minute")
 async def subscribe(
     payload: WaitlistSubscribeRequest,
     request: Request,
@@ -83,9 +85,9 @@ async def subscribe(
     the row's `submissions` counter + `updated_at`. This keeps the API UX clean
     for users re-submitting the form (e.g. after a "did it work?" moment).
     """
-    # Apply rate limiting — wired via slowapi decorator on app.state.limiter.
-    # slowapi reads request.state, so we apply the decorator via the app.state.limiter
-    # at router registration time instead of here.
+    # Rate limited to 10/minute per real client IP via the @limiter.limit
+    # decorator above (audit C2 re-gate: the documented limit was previously
+    # not actually applied; only the global default protected this endpoint).
 
     normalized_email = payload.email.lower().strip()
 

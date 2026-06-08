@@ -206,6 +206,7 @@ app.include_router(ml_ops.router)      # Read-only ML ops endpoints for Phase 5 
 
 
 @app.get("/")
+@limiter.exempt
 async def health_check():
     """Public root endpoint — no DB ping. Marketing/curiosity check only."""
     return {
@@ -217,12 +218,14 @@ async def health_check():
 
 
 @app.get("/healthz")
+@limiter.exempt
 async def healthz():
     """Liveness probe — process is up. No DB check (cheap, fast)."""
     return {"status": "ok"}
 
 
 @app.get("/readyz")
+@limiter.exempt
 async def readyz():
     """Readiness probe — verifies DB *and schema* are healthy.
 

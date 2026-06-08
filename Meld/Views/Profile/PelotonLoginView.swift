@@ -47,7 +47,8 @@ struct PelotonLoginView: View {
 
                         DSTextField(
                             placeholder: "Password",
-                            text: $password
+                            text: $password,
+                            isSecure: true
                         )
                         .textContentType(.password)
 

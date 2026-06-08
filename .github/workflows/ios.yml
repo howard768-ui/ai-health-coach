@@ -85,6 +85,11 @@ jobs:
         # `set -o pipefail` propagates xcodebuild's exit code past xcpretty.
         run: |
           set -o pipefail
+          # tee the raw xcodebuild stream to a file BEFORE xcpretty. xcpretty
+          # silently drops most per-file diagnostics on the macos-15 runner
+          # (an internal parse error kills its output), so the raw log is the
+          # only reliable record of compile/test failures. Uploaded by the
+          # "Upload raw xcodebuild logs" step on failure.
           xcodebuild \
             -project Meld.xcodeproj \
             -scheme "$SCHEME" \
@@ -92,7 +97,7 @@ jobs:
             -configuration Debug \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            build 2>&1 | xcpretty
+            build 2>&1 | tee "$RUNNER_TEMP/xcodebuild-build.log" | xcpretty
 
       # Split test invocations by target type because they need different
       # signing settings and have different failure modes. Running them in
@@ -126,7 +131,7 @@ jobs:
             -skip-testing:MeldSnapshotTests \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            test 2>&1 | xcpretty --test --color
+            test 2>&1 | tee "$RUNNER_TEMP/xcodebuild-test-unit.log" | xcpretty --test --color
 
       # Pre-warm the simulator before the UI test to dodge the macos-15 +
       # iOS 18 RunningBoard race. Symptom on a cold boot: xctrunner asks
@@ -184,7 +189,19 @@ jobs:
             -retry-tests-on-failure \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
-            test 2>&1 | xcpretty --test --color
+            test 2>&1 | tee "$RUNNER_TEMP/xcodebuild-test-ui.log" | xcpretty --test --color
+
+      - name: Upload raw xcodebuild logs
+        # always() so we capture the raw stream even when xcpretty greens a
+        # step it mis-parsed. These plain-text logs contain the actual
+        # compile errors and per-test failures that xcpretty drops.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-raw-logs
+          path: |
+            ${{ runner.temp }}/xcodebuild-*.log
+          if-no-files-found: ignore
 
       - name: Upload build logs on failure
         if: failure()

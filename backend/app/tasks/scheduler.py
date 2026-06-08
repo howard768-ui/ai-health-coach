@@ -4,6 +4,7 @@ Uses APScheduler's AsyncIOScheduler to run periodic jobs.
 All jobs check anti-fatigue gates before sending.
 """
 
+import asyncio
 import logging
 from datetime import datetime
 
@@ -249,6 +250,9 @@ async def _run_notification_job(
                 sent += 1
             except Exception:  # noqa: BLE001 -- one user's failure must not abort the rest
                 logger.exception("%s failed for user %s", job_name, user_id[:12])
+                # Roll back so a failed/pending transaction does not poison the
+                # shared session for the remaining users in this run (audit P2a).
+                await db.rollback()
     logger.info("%s complete (sent=%d/%d)", job_name, sent, len(users))
 
 
@@ -286,7 +290,12 @@ async def morning_brief_job():
             }
         # Fallback to AI generation
         logger.info("Morning brief from AI (no template for context=%s)", context)
-        return notification_engine.generate_morning_brief(health_data, user_name=user_name)
+        # Offload the synchronous Claude SDK call so it does not block the
+        # AsyncIOScheduler event loop (and all API request handling) for the
+        # 10-30s of the call. Audit P2a.
+        return await asyncio.to_thread(
+            notification_engine.generate_morning_brief, health_data, user_name=user_name
+        )
 
     await _run_notification_job("morning_brief_job", "morning_brief", build)
 
@@ -312,7 +321,9 @@ async def coaching_nudge_job():
         # "daily" sends every day — no skip
 
         health_data = await _get_latest_health_data(db, user_id)
-        return content_generator.generate_coaching_nudge(health_data, user_name=user_name)
+        return await asyncio.to_thread(
+            content_generator.generate_coaching_nudge, health_data, user_name=user_name
+        )
 
     await _run_notification_job("coaching_nudge_job", "coaching_nudge", build)
 
@@ -321,7 +332,9 @@ async def bedtime_coaching_job():
     """Wind-down reminder timed to sleep window."""
     async def build(db, user_id, user_name):
         health_data = await _get_latest_health_data(db, user_id)
-        return content_generator.generate_bedtime_coaching(health_data, user_name=user_name)
+        return await asyncio.to_thread(
+            content_generator.generate_bedtime_coaching, health_data, user_name=user_name
+        )
 
     await _run_notification_job("bedtime_coaching_job", "bedtime_coaching", build)
 

@@ -4,6 +4,7 @@ Handles incoming webhooks from Oura (and future data sources).
 When Oura sends a webhook, we trigger a sync + coaching notification.
 """
 
+import asyncio
 import json as _json
 import logging
 from datetime import datetime
@@ -237,9 +238,13 @@ async def oura_webhook_receiver(request: Request, db: AsyncSession = Depends(get
                     "total_sleep_hours": (sr.total_sleep_seconds or 0) / 3600,
                 }
 
-                # Generate morning brief
-                content = notification_engine.generate_morning_brief(
-                    health_data, user_name=user_name
+                # Generate morning brief. Offload the synchronous Claude SDK
+                # call so it does not block the event loop for the 10-30s of the
+                # call while the webhook handler is running. Audit P2a.
+                content = await asyncio.to_thread(
+                    notification_engine.generate_morning_brief,
+                    health_data,
+                    user_name=user_name,
                 )
 
                 # Send push notification

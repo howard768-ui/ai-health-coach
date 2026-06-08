@@ -19,6 +19,7 @@ that pins the voice invariant.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 
@@ -161,7 +162,11 @@ async def generate_narration(
     # Single Opus call; keep max_tokens small so the model does not meander.
     raw_text: str | None = None
     try:
-        response = client.messages.create(  # type: ignore[attr-defined]
+        # Offload the synchronous Anthropic SDK call so generate_narration (an
+        # async function reached from the /explain-finding request path) does
+        # not block the event loop for the duration of the Opus call. Audit P2a.
+        response = await asyncio.to_thread(
+            client.messages.create,  # type: ignore[attr-defined]
             model=NARRATION_MODEL,
             system=_NARRATION_SYSTEM_PROMPT,
             max_tokens=NARRATION_MAX_TOKENS,

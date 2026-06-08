@@ -30,6 +30,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.ratelimit import limiter
 from app.database import get_db
 from app.routers.ml_ops_helpers import _days_between, _iso, _scalar_or_none
 
@@ -238,6 +239,7 @@ async def _insight_ctr(db: AsyncSession, days: int = 7) -> float | None:
 
 
 @router.get("/signal-quality", response_model=SignalQualityResponse)
+@limiter.exempt  # public monitoring endpoint: never rate-limited (audit C2 re-gate)
 async def signal_quality(
     db: AsyncSession = Depends(get_db),
 ) -> SignalQualityResponse:
@@ -337,6 +339,7 @@ async def _source_freshness(
 
 
 @router.get("/data-quality", response_model=DataQualityResponse)
+@limiter.exempt  # public monitoring endpoint: never rate-limited (audit C2 re-gate)
 async def data_quality(db: AsyncSession = Depends(get_db)) -> DataQualityResponse:
     """Per-source freshness + simple completeness."""
     now = datetime.now(timezone.utc)
@@ -367,6 +370,7 @@ async def data_quality(db: AsyncSession = Depends(get_db)) -> DataQualityRespons
 
 
 @router.get("/feature-drift", response_model=FeatureDriftResponse)
+@limiter.exempt  # public monitoring endpoint: never rate-limited (audit C2 re-gate)
 async def feature_drift(
     db: AsyncSession = Depends(get_db),
 ) -> FeatureDriftResponse:
@@ -475,6 +479,7 @@ def _experiment_phase_from_status(status: str | None) -> str:
 
 
 @router.get("/experiments", response_model=ExperimentsResponse)
+@limiter.exempt  # public monitoring endpoint: never rate-limited (audit C2 re-gate)
 async def experiments(db: AsyncSession = Depends(get_db)) -> ExperimentsResponse:
     """Summary of active + recently-completed APTE experiments.
 
@@ -541,6 +546,7 @@ async def experiments(db: AsyncSession = Depends(get_db)) -> ExperimentsResponse
 
 
 @router.get("/retrain-readiness", response_model=RetrainReadinessResponse)
+@limiter.exempt  # public monitoring endpoint: never rate-limited (audit C2 re-gate)
 async def retrain_readiness(
     db: AsyncSession = Depends(get_db),
 ) -> RetrainReadinessResponse:
@@ -609,6 +615,7 @@ async def retrain_readiness(
 
 
 @router.get("/model-registry", response_model=ModelRegistryResponse)
+@limiter.exempt  # public monitoring endpoint: never rate-limited (audit C2 re-gate)
 async def model_registry(
     db: AsyncSession = Depends(get_db),
 ) -> ModelRegistryResponse:

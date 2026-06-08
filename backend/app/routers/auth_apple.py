@@ -332,8 +332,12 @@ _PER_USER_PHI_TABLES_NO_FK = (
     "ml_feature_values",
     "ml_insight_candidates",
     "ml_rankings",
-    "ml_experiments",
+    # ml_n_of_1_results has a RESTRICT FK to ml_experiments, so with SQLite FK
+    # enforcement now on (database.py) the child MUST be deleted before the
+    # parent or the DELETE FROM ml_experiments raises and blocks the whole
+    # account deletion. Order matters here.
     "ml_n_of_1_results",
+    "ml_experiments",
     "user_mascot_state",
     "notification_records",
     "device_tokens",

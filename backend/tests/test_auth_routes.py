@@ -370,8 +370,39 @@ async def test_delete_account_purges_all_user_keyed_phi(client, db_session, monk
     # Seed a representative uncascaded row across each category: an ML table, the
     # mascot table, and the notification table. All three have no FK to users.
     # Use the ORM so Python-side column defaults (created_at, etc.) apply.
+    from datetime import datetime
+
+    # An experiment WITH a child result. ml_n_of_1_results has a RESTRICT FK to
+    # ml_experiments, so with SQLite FK enforcement on, deletion must purge the
+    # child before the parent or the whole delete fails (re-gate regression).
+    exp = ml_experiments.MLExperiment(
+        user_id=apple_id,
+        experiment_name="dinner timing",
+        treatment_metric="dinner_hour",
+        outcome_metric="sleep_efficiency",
+        design="ab",
+        status="completed",
+        started_at=datetime(2026, 5, 1),
+        baseline_end="2026-05-14",
+        treatment_start="2026-05-17",
+        treatment_end="2026-05-31",
+    )
+    db_session.add(exp)
+    await db_session.flush()  # assign exp.id for the FK
     db_session.add_all(
         [
+            ml_experiments.MLNof1Result(
+                experiment_id=exp.id,
+                user_id=apple_id,
+                treatment_metric="dinner_hour",
+                outcome_metric="sleep_efficiency",
+                baseline_n=10,
+                treatment_n=10,
+                compliant_days_baseline=10,
+                compliant_days_treatment=10,
+                method="permutation_test",
+                model_version="v1",
+            ),
             ml_insights.MLRanking(
                 user_id=apple_id,
                 surface_date="2026-06-06",
@@ -412,7 +443,8 @@ async def test_delete_account_purges_all_user_keyed_phi(client, db_session, monk
     assert resp.status_code == 200
 
     db_session.expire_all()
-    for table in ("ml_rankings", "user_mascot_state", "notification_records"):
+    for table in ("ml_rankings", "user_mascot_state", "notification_records",
+                  "ml_experiments", "ml_n_of_1_results"):
         count = (
             await db_session.execute(
                 text(f"SELECT COUNT(*) FROM {table} WHERE user_id = :u"),  # noqa: S608

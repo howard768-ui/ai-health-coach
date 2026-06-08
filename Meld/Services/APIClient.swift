@@ -609,7 +609,11 @@ actor APIClient {
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
 
-        let (_, response) = try await session.data(for: request)
+        // Route through authedData so the Authorization: Bearer header is
+        // attached (with 401 refresh+retry). Previously this used the raw
+        // session, so DELETE /api/user/oura (CurrentUser-gated) always 401'd
+        // and the disconnect silently no-op'd. Audit P2c.
+        let (_, response) = try await authedData(for: request)
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 204 else {
             throw APIError.serverError

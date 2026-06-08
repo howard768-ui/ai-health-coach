@@ -348,16 +348,26 @@ async def update_notification_preferences(
     return prefs
 
 
+class NotificationOpenedRequest(BaseModel):
+    notification_id: int
+
+
 @router.post("/opened")
 async def report_notification_opened(
-    notification_id: int,
+    payload: NotificationOpenedRequest,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ):
-    """Track when a user opens a notification (for anti-fatigue metrics)."""
+    """Track when a user opens a notification (for anti-fatigue metrics).
+
+    Reads notification_id from the JSON body. iOS (APIClient.reportNotificationOpened
+    -> APINotificationOpenedRequest) sends it in the body, but this used to declare
+    it as a bare scalar = a query param, so every open report 422'd and open
+    tracking was silently broken. Audit P2b (round-1 H).
+    """
     result = await db.execute(
         select(NotificationRecord).where(
-            NotificationRecord.id == notification_id,
+            NotificationRecord.id == payload.notification_id,
             NotificationRecord.user_id == current_user.apple_user_id,
         )
     )

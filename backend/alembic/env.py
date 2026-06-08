@@ -24,6 +24,10 @@ from app.models import ml_features  # noqa: F401
 from app.models import ml_baselines  # noqa: F401
 from app.models import ml_insights  # noqa: F401
 from app.models import ml_synth  # noqa: F401
+# Canonical complete registration: importing the package pulls EVERY model
+# module (see app/models/__init__.py), so target_metadata covers every table
+# and autogenerate never emits a spurious drop_table. Audit P2b.
+from app import models  # noqa: F401
 
 # Load app settings to get the real DATABASE_URL
 from app.config import settings

@@ -18,43 +18,39 @@ import Foundation
 /// that is what the backend stores; interpreting them in device-local time
 /// would shift every timestamp by the device's UTC offset.
 enum BackendDate {
-    /// Fixed-format parsers for the naive (no-timezone) backend forms, ordered
-    /// most-specific first. UTC + en_US_POSIX so the wall-clock string is read
-    /// as UTC and parsing is independent of device locale/calendar settings.
-    private static let naiveFormatters: [DateFormatter] = {
-        ["yyyy-MM-dd'T'HH:mm:ss.SSSSSS",
-         "yyyy-MM-dd'T'HH:mm:ss.SSS",
-         "yyyy-MM-dd'T'HH:mm:ss"].map { format in
+    /// Naive (no-timezone) backend forms, ordered most-specific first.
+    private static let naiveFormats = [
+        "yyyy-MM-dd'T'HH:mm:ss.SSSSSS",
+        "yyyy-MM-dd'T'HH:mm:ss.SSS",
+        "yyyy-MM-dd'T'HH:mm:ss",
+    ]
+
+    /// Parse a backend timestamp string, or nil if it matches no known form.
+    /// Callers keep their own `?? Date()` fallback for display.
+    ///
+    /// Formatters are created locally rather than cached in `static` storage:
+    /// `DateFormatter`/`ISO8601DateFormatter` are non-`Sendable`, so a cached
+    /// `static let` trips Swift 6 strict-concurrency checks, and this repo
+    /// avoids `nonisolated(unsafe)`. Allocation cost is negligible at call
+    /// sites (a handful of items per response).
+    static func parse(_ string: String) -> Date? {
+        for format in naiveFormats {
             let formatter = DateFormatter()
             formatter.dateFormat = format
             formatter.locale = Locale(identifier: "en_US_POSIX")
             formatter.timeZone = TimeZone(identifier: "UTC")
-            return formatter
-        }
-    }()
-
-    /// ISO8601 with fractional seconds, for tz-bearing strings like
-    /// `2026-05-03T08:00:00.123Z`.
-    private static let isoWithFractional: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
-
-    /// ISO8601 without fractional seconds, for `2026-05-03T08:00:00Z`.
-    private static let isoPlain = ISO8601DateFormatter()
-
-    /// Parse a backend timestamp string, or nil if it matches no known form.
-    /// Callers keep their own `?? Date()` fallback for display.
-    static func parse(_ string: String) -> Date? {
-        for formatter in naiveFormatters {
             if let date = formatter.date(from: string) {
                 return date
             }
         }
+
+        // tz-bearing forms ("...Z" / "+00:00") from a few endpoints.
+        let isoWithFractional = ISO8601DateFormatter()
+        isoWithFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let date = isoWithFractional.date(from: string) {
             return date
         }
-        return isoPlain.date(from: string)
+
+        return ISO8601DateFormatter().date(from: string)
     }
 }

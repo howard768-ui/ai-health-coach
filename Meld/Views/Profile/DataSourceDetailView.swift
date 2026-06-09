@@ -174,7 +174,7 @@ struct DataSourceDetailView: View {
             Task {
                 do {
                     let url = try await APIClient.shared.startOuraConnect()
-                    UIApplication.shared.open(url)
+                    _ = await UIApplication.shared.open(url)
                 } catch {
                     syncMessage = "Couldn't start Oura connection. Try again."
                     DSHaptic.error()

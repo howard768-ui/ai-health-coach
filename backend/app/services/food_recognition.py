@@ -63,8 +63,13 @@ def _downsize_for_anthropic(image_base64: str, media_type: str) -> tuple[str, st
     since it's the smallest format Anthropic accepts and modern phones
     sometimes upload HEIC even when the field is `image/jpeg`.
 
-    No-ops when the input is already under the safety margin, so small
-    images don't waste CPU on a re-encode round trip.
+    Privacy (Audit P2d): photo-library uploads carry EXIF including GPS
+    coordinates (where the meal was eaten). The iOS client strips this, but
+    we re-encode here as defense-in-depth so a non-stripping client can never
+    leak location to Anthropic. We therefore ALWAYS re-encode (no
+    pass-through) — PIL's JPEG save drops EXIF/GPS/ICC since we never pass
+    `exif=`. Small images are re-encoded at full dimensions; only oversize
+    ones are downsized.
 
     Raises ValueError on malformed base64 or undecodable image bytes —
     the caller surfaces that as a 400 to the iOS client.
@@ -73,9 +78,6 @@ def _downsize_for_anthropic(image_base64: str, media_type: str) -> tuple[str, st
         raw = base64.b64decode(image_base64, validate=True)
     except (ValueError, base64.binascii.Error) as exc:
         raise ValueError(f"Malformed base64 image payload: {exc}") from exc
-
-    if len(raw) <= _DOWNSIZE_TARGET_BYTES:
-        return image_base64, media_type
 
     try:
         img = Image.open(BytesIO(raw))
@@ -96,9 +98,16 @@ def _downsize_for_anthropic(image_base64: str, media_type: str) -> tuple[str, st
     elif img.mode != "RGB":
         img = img.convert("RGB")
 
-    # Step down quality until under the safety margin. 2000 px is plenty
-    # of detail for food recognition; quality 25 is the floor before
-    # artifacts make food unidentifiable.
+    # Re-encode at full dimensions first: strips metadata while preserving
+    # detail. Covers the common case (image already under the size margin).
+    buf = BytesIO()
+    img.save(buf, format="JPEG", quality=90, optimize=True)
+    if buf.tell() <= _DOWNSIZE_TARGET_BYTES:
+        return base64.b64encode(buf.getvalue()).decode("ascii"), "image/jpeg"
+
+    # Still too big — step down dimensions + quality until under the safety
+    # margin. 2000 px is plenty of detail for food recognition; quality 25 is
+    # the floor before artifacts make food unidentifiable.
     for quality in (85, 70, 55, 40, 25):
         resized = img.copy()
         resized.thumbnail((_MAX_DIMENSION, _MAX_DIMENSION), Image.LANCZOS)

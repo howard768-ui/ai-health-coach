@@ -713,7 +713,7 @@ struct APIDashboardResponse: Codable {
             ),
             coachInsight: CoachInsight(
                 message: coach_insight.message,
-                timestamp: ISO8601DateFormatter().date(from: coach_insight.timestamp) ?? Date()
+                timestamp: BackendDate.parse(coach_insight.timestamp) ?? Date()
             ),
             lastSynced: Date()
         )

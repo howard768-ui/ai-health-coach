@@ -211,9 +211,13 @@ def test_compose_user_prompt_anomaly_includes_observation_date_and_z():
 
 @pytest.mark.asyncio
 async def test_narrator_uses_opus_model_by_default():
+    """Narration must bill the CENTRALIZED Opus model id (Settings, PR #95),
+    not a hardcoded literal: a model deprecation is one env-var override."""
+    from app.config import settings
+
     client = FakeAnthropicClient(next_text="Higher protein and longer deep sleep often show up together.")
     await translator.generate_narration(_correlation_request(), client=client)
     assert client.calls, "Translator should have hit the client"
-    assert client.calls[0]["model"] == translator.NARRATION_MODEL
+    assert client.calls[0]["model"] == settings.anthropic_model_opus
     # System prompt includes the voice rules.
     assert "em dashes" in client.calls[0]["system"] or "em dash" in client.calls[0]["system"]

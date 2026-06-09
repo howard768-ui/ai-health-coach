@@ -113,7 +113,13 @@ async def subscribe(
         if payload.utm_content:
             existing.utm_content = payload.utm_content[:128]
         await db.commit()
-        logger.info("waitlist re-submission email=%s submissions=%d", normalized_email, existing.submissions)
+        # Log a redacted form: full emails in info logs end up in the log
+        # aggregator (PII hygiene, same class as apple_user_id truncation).
+        logger.info(
+            "waitlist re-submission email=%s*** submissions=%d",
+            normalized_email[:3],
+            existing.submissions,
+        )
         return WaitlistSubscribeResponse(
             status="ok",
             message="You're already on the list. We'll be in touch.",
@@ -142,7 +148,11 @@ async def subscribe(
         logger.warning("waitlist insert race or error: %s", exc)
         raise HTTPException(status_code=500, detail="Could not save your email. Please try again.") from exc
 
-    logger.info("waitlist new signup email=%s source=%s", normalized_email, payload.source)
+    logger.info(
+        "waitlist new signup email=%s*** source=%s",
+        normalized_email[:3],
+        payload.source,
+    )
     return WaitlistSubscribeResponse(
         status="ok",
         message="You're on the list. We'll be in touch.",

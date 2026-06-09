@@ -236,7 +236,7 @@ async def refresh_token(
         # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
         logger.warning(
             "Refresh token reuse detected for user=%s; revoking chain",
-            row.user_id,
+            row.user_id[:12] + "...",
         )
         await _revoke_chain(db, token_hash)
         # Also revoke every other active refresh token for this user as a precaution.
@@ -476,5 +476,9 @@ async def apple_server_notification(request: Request, db: AsyncSession = Depends
         if user is not None and user.is_active:
             user.is_active = False
             await db.commit()
-            logger.info("Deactivated user %s on %s notification", apple_user_id, event_type)
+            logger.info(
+                "Deactivated user %s on %s notification",
+                apple_user_id[:12] + "...",
+                event_type,
+            )
     return {"status": "ok", "type": event_type}

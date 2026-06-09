@@ -101,11 +101,23 @@ class PelotonClient:
 
         ride = workout.get("ride", {}) or {}
 
+        # total_work arrives in joules; /1000 approximates kcal (Peloton
+        # convention). Round to nearest instead of floor-dividing: the old
+        # `// 1000 or None` turned any low-output workout (<1000 J, e.g.
+        # short stretches) into None, silently dropping the calories metric
+        # for a workout that DID report work. None now strictly means
+        # "Peloton sent no usable total_work". Audit P4/G.
+        total_work = workout.get("total_work")
+        if isinstance(total_work, (int, float)) and total_work > 0:
+            calories = round(total_work / 1000)
+        else:
+            calories = None
+
         return {
             "peloton_workout_id": workout.get("id"),
             "workout_type": workout_type,
             "duration_seconds": ride.get("duration", workout.get("ride_duration", 0)) or 0,
-            "calories": int(workout.get("total_work", 0) or 0) // 1000 or None,
+            "calories": calories,
             "avg_heart_rate": workout.get("avg_heart_rate"),
             "max_heart_rate": workout.get("max_heart_rate"),
             "avg_output": workout.get("avg_output"),

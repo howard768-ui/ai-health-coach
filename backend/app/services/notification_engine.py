@@ -12,7 +12,7 @@ from datetime import datetime
 
 import anthropic
 
-from app.services.coach_engine import CoachEngine
+from app.services.coach_engine import CoachEngine, ModelTier
 from app.services.notification_media import generate_recovery_badge
 from app.services.notification_safety import safe_notification_text
 from app.core.time import utcnow_naive
@@ -77,12 +77,16 @@ class NotificationEngine:
         if rhr:
             data_summary += f", RHR: {rhr:.0f}bpm"
 
-        # Use CoachEngine for AI-generated content
+        # Use CoachEngine for AI-generated content. Explicit Sonnet tier:
+        # the query is a static template, and keyword routing on template
+        # wording is nondeterministic and can bill Opus. Safety can still
+        # escalate inside process_query. Audit P3/C3.
         try:
             result = self.coach.process_query(
                 query=MORNING_BRIEF_PROMPT.format(health_data=data_summary),
                 health_data=health_data,
                 user_name=user_name,
+                model_tier=ModelTier.SONNET,
             )
             response_text = result["response"]
 

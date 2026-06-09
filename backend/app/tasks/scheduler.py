@@ -227,10 +227,14 @@ async def _run_notification_job(
             logger.info("No active users — skipping %s", job_name)
             return
 
+        # Materialize ids/names while the ORM objects are fresh: the mid-loop
+        # rollback() below expires them, and touching an expired attribute on
+        # an async session raises MissingGreenlet, which would kill the rest
+        # of the tick (the exact failure the rollback exists to prevent).
+        user_rows = [(u.apple_user_id, _first_name_of(u)) for u in users]
+
         sent = 0
-        for user in users:
-            user_id = user.apple_user_id
-            user_name = _first_name_of(user)
+        for user_id, user_name in user_rows:
             try:
                 if not await can_send(db, user_id, category):
                     continue
@@ -456,15 +460,32 @@ async def oura_sync_job():
         if not users:
             logger.info("oura_sync_job: no active users yet")
             return
-        for user in users:
-            user_id = user.apple_user_id
+        # Ids materialized up front: rollback() in the except expires the ORM
+        # rows, and expired-attribute access on an async session raises
+        # MissingGreenlet (see _run_notification_job).
+        for user_id in [u.apple_user_id for u in users]:
             try:
                 result = await oura_sync(db, user_id)
                 logger.info("oura_sync_job user=%s result=%s", user_id[:12], result)
-                today = utcnow_naive().strftime("%Y-%m-%d")
-                await reconcile_day(db, user_id, today)
+                # Guard reconcile on a successful sync, matching the Peloton and
+                # Garmin jobs below. Reconciling after a failed sync re-blesses
+                # stale canonical rows from whatever partial state the failed
+                # sync left behind. Audit P3 (round-2 low, scheduler.py:449).
+                if result.get("status") == "ok":
+                    today = utcnow_naive().strftime("%Y-%m-%d")
+                    await reconcile_day(db, user_id, today)
             except Exception:  # noqa: BLE001 -- isolate one user's failure
                 logger.exception("oura_sync_job failed for user %s", user_id[:12])
+                # Clear any failed transaction so one user's DB error cannot
+                # poison the shared session for every later user in the tick
+                # (PendingRollbackError cascade). Same fix as the notification
+                # jobs. Audit P3 (round-2 A46 class). The rollback itself must
+                # never raise (that would defeat the isolation it exists for),
+                # so swallow + log any failure.
+                try:
+                    await db.rollback()
+                except Exception:  # noqa: BLE001
+                    logger.debug("rollback after per-user failure also failed", exc_info=True)
 
 
 async def peloton_sync_job():
@@ -475,8 +496,8 @@ async def peloton_sync_job():
         if not users:
             logger.info("peloton_sync_job: no active users yet")
             return
-        for user in users:
-            user_id = user.apple_user_id
+        # Ids materialized up front; see oura_sync_job.
+        for user_id in [u.apple_user_id for u in users]:
             try:
                 result = await peloton_sync(db, user_id)
                 logger.info("peloton_sync_job user=%s result=%s", user_id[:12], result)
@@ -485,6 +506,11 @@ async def peloton_sync_job():
                     await reconcile_day(db, user_id, today)
             except Exception:  # noqa: BLE001
                 logger.exception("peloton_sync_job failed for user %s", user_id[:12])
+                # Clear any failed transaction; see oura_sync_job above.
+                try:
+                    await db.rollback()
+                except Exception:  # noqa: BLE001
+                    logger.debug("rollback after per-user failure also failed", exc_info=True)
 
 
 async def garmin_sync_job():
@@ -495,8 +521,8 @@ async def garmin_sync_job():
         if not users:
             logger.info("garmin_sync_job: no active users yet")
             return
-        for user in users:
-            user_id = user.apple_user_id
+        # Ids materialized up front; see oura_sync_job.
+        for user_id in [u.apple_user_id for u in users]:
             try:
                 result = await garmin_sync(db, user_id)
                 logger.info("garmin_sync_job user=%s result=%s", user_id[:12], result)
@@ -505,6 +531,11 @@ async def garmin_sync_job():
                     await reconcile_day(db, user_id, today)
             except Exception:  # noqa: BLE001
                 logger.exception("garmin_sync_job failed for user %s", user_id[:12])
+                # Clear any failed transaction; see oura_sync_job above.
+                try:
+                    await db.rollback()
+                except Exception:  # noqa: BLE001
+                    logger.debug("rollback after per-user failure also failed", exc_info=True)
 
 
 async def webhook_renewal_job():

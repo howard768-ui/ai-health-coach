@@ -140,6 +140,12 @@ final class MealsViewModel {
 
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
+        // en_US_POSIX pins the Gregorian calendar + ASCII digits: without it,
+        // a device set to a non-Gregorian calendar (Buddhist, Japanese) makes
+        // "yyyy" render e.g. 2569 and the backend stores meals on the wrong
+        // date. Time zone stays device-local on purpose: the meal "date" is
+        // the user's local calendar day. Audit P3/E7.
+        f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd"
         return f
     }()

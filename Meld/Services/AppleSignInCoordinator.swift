@@ -27,10 +27,19 @@ final class AppleSignInCoordinator: NSObject {
     private var continuation: CheckedContinuation<Void, Error>?
 
     /// Call this from the SignInWithAppleButton's onRequest closure.
+    ///
+    /// If CSPRNG nonce generation fails (vanishingly rare), `currentRawNonce`
+    /// stays nil and no nonce is attached; the delegate's missing-nonce guard
+    /// then fails the flow with a retryable error instead of the old
+    /// `fatalError` crash. The identity token is never forwarded to the
+    /// backend without a verified nonce. Audit P3/E7.
     func prepareRequest(_ request: ASAuthorizationAppleIDRequest) {
-        let nonce = Self.randomNonceString()
-        self.currentRawNonce = nonce
         request.requestedScopes = [.fullName, .email]
+        guard let nonce = Self.randomNonceString() else {
+            self.currentRawNonce = nil
+            return
+        }
+        self.currentRawNonce = nonce
         request.nonce = Self.sha256(nonce)
     }
 
@@ -48,6 +57,15 @@ final class AppleSignInCoordinator: NSObject {
             let request = ASAuthorizationAppleIDProvider().createRequest()
             prepareRequest(request)
 
+            // Fail fast (and retryably) if nonce generation failed, instead
+            // of sending the user through Face ID for a flow that the
+            // delegate would have to reject anyway. Audit P3/E7.
+            guard currentRawNonce != nil else {
+                self.continuation = nil
+                cont.resume(throwing: AppleSignInError.nonceGenerationFailed)
+                return
+            }
+
             let controller = ASAuthorizationController(authorizationRequests: [request])
             controller.delegate = self
             controller.presentationContextProvider = self
@@ -58,20 +76,19 @@ final class AppleSignInCoordinator: NSObject {
     // MARK: - Nonce helpers
 
     /// Generate a CSPRNG-backed random nonce. URL-safe characters only.
-    static func randomNonceString(length: Int = 32) -> String {
+    /// Returns nil if SecRandomCopyBytes fails (callers surface a retryable
+    /// sign-in error; the old behavior was a fatalError crash). Audit P3/E7.
+    static func randomNonceString(length: Int = 32) -> String? {
         precondition(length > 0)
         let charset: [Character] = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-._")
         var result = ""
         var remainingLength = length
 
         while remainingLength > 0 {
-            let randoms: [UInt8] = (0..<16).map { _ in
-                var random: UInt8 = 0
-                let status = SecRandomCopyBytes(kSecRandomDefault, 1, &random)
-                if status != errSecSuccess {
-                    fatalError("Unable to generate nonce. SecRandomCopyBytes failed with OSStatus \(status)")
-                }
-                return random
+            var randoms = [UInt8](repeating: 0, count: 16)
+            let status = SecRandomCopyBytes(kSecRandomDefault, randoms.count, &randoms)
+            if status != errSecSuccess {
+                return nil
             }
 
             for random in randoms {
@@ -180,6 +197,7 @@ enum AppleSignInError: LocalizedError {
     case invalidCredential
     case missingIdentityToken
     case missingNonce
+    case nonceGenerationFailed
     case userCancelled
 
     var errorDescription: String? {
@@ -187,6 +205,7 @@ enum AppleSignInError: LocalizedError {
         case .invalidCredential: "Sign in with Apple returned an invalid credential."
         case .missingIdentityToken: "Sign in with Apple did not return an identity token."
         case .missingNonce: "Sign in nonce was lost before Apple responded."
+        case .nonceGenerationFailed: "Couldn't start a secure sign-in. Please try again."
         case .userCancelled: "Sign in cancelled."
         }
     }

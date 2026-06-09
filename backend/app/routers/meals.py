@@ -151,14 +151,23 @@ async def get_meals(
     )
     meals = result.scalars().all()
 
+    # One query for all items across the day's meals instead of one query
+    # per meal (N+1 on the hot Log-tab read path). Audit P4/G.
+    items_by_meal: dict[int, list[FoodItemRecord]] = {}
+    if meals:
+        items_result = await db.execute(
+            select(FoodItemRecord).where(
+                FoodItemRecord.meal_id.in_([meal.id for meal in meals])
+            )
+        )
+        for item in items_result.scalars().all():
+            items_by_meal.setdefault(item.meal_id, []).append(item)
+
     meal_responses = []
     total_cal, total_p, total_c, total_f = 0, 0.0, 0.0, 0.0
 
     for meal in meals:
-        items_result = await db.execute(
-            select(FoodItemRecord).where(FoodItemRecord.meal_id == meal.id)
-        )
-        items = items_result.scalars().all()
+        items = items_by_meal.get(meal.id, [])
         response = _meal_to_response(meal, items)
         meal_responses.append(response)
         total_cal += response.total_calories

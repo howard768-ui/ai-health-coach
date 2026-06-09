@@ -96,7 +96,10 @@ async def get_latest_health_data(db: AsyncSession, user_id: str) -> dict:
         }
 
     # Fallback: read directly from SleepRecord (Oura-only, pre-reconciliation)
-    logger.info("No reconciled data — falling back to SleepRecord for user %s", user_id)
+    logger.info(
+        "No reconciled data; falling back to SleepRecord for user %s",
+        user_id[:12] + "...",
+    )
     return await _get_sleep_record_data(db, user_id)
 
 

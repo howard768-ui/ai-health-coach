@@ -153,37 +153,11 @@ struct DataSourceDetailView: View {
     }
 
     private func formatSyncTime(_ rawString: String) -> String {
-        // Try multiple date formats since backend may return various ISO formats
-        let formatters: [DateFormatter] = {
-            let formats = [
-                "yyyy-MM-dd'T'HH:mm:ss.SSSSSS",
-                "yyyy-MM-dd'T'HH:mm:ss.SSS",
-                "yyyy-MM-dd'T'HH:mm:ss",
-            ]
-            return formats.map { fmt in
-                let f = DateFormatter()
-                f.dateFormat = fmt
-                f.locale = Locale(identifier: "en_US_POSIX")
-                return f
-            }
-        }()
-
-        var date: Date?
-        for formatter in formatters {
-            if let d = formatter.date(from: rawString) {
-                date = d
-                break
-            }
-        }
-
-        // Also try ISO8601
-        if date == nil {
-            let iso = ISO8601DateFormatter()
-            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            date = iso.date(from: rawString)
-        }
-
-        guard let parsed = date else { return rawString }
+        // Backend timestamps are naive UTC (Python isoformat, see BackendDate).
+        // Use the shared parser so this screen reads them as UTC instead of
+        // device-local time — the previous inline DateFormatter array never set
+        // timeZone = UTC, so "last synced" was off by the device's UTC offset.
+        guard let parsed = BackendDate.parse(rawString) else { return rawString }
 
         let relative = RelativeDateTimeFormatter()
         relative.unitsStyle = .full

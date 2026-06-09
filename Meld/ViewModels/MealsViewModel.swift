@@ -44,7 +44,7 @@ final class MealsViewModel {
                 date: Date(),
                 meals: response.meals.map { apiMeal in
                     Meal(
-                        date: ISO8601DateFormatter().date(from: apiMeal.created_at) ?? Date(),
+                        date: BackendDate.parse(apiMeal.created_at) ?? Date(),
                         mealType: MealType(rawValue: apiMeal.meal_type.capitalized) ?? .fromTime(Date()),
                         items: apiMeal.items.map { $0.toFoodItem() },
                         source: InputSource(rawValue: apiMeal.source) ?? .manual

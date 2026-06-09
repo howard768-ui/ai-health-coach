@@ -8,6 +8,7 @@
   Permissions-Policy: geolocation=(), microphone=(), camera=(), payment=()
   X-XSS-Protection: 1; mode=block
   Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://cdn.telemetrydeck.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://nom.telemetrydeck.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
 
 # Long-cache hashed assets (Astro emits content-hashed filenames under /_astro/)
 /_astro/*

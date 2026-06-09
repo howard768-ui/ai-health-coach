@@ -98,7 +98,15 @@ struct CameraView: View {
                     if let data = try? await newItem.loadTransferable(type: Data.self),
                        let image = UIImage(data: data) {
                         capturedImage = image
-                        await recognizeFood(imageData: data)
+                        // Audit P2d: PhotosPicker returns the original asset
+                        // bytes, which carry EXIF including GPS coordinates
+                        // (where the meal was eaten). Re-encode through UIImage
+                        // to strip all metadata before the photo leaves the
+                        // device — the backend and Claude Vision never receive
+                        // location data. If re-encoding fails, do NOT fall back
+                        // to the raw bytes; skip rather than leak.
+                        guard let stripped = image.jpegData(compressionQuality: 0.85) else { return }
+                        await recognizeFood(imageData: stripped)
                     }
                 }
             }

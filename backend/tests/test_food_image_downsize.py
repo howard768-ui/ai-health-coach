@@ -5,7 +5,8 @@ MELD-BACKEND-J / MELD-BACKEND-H fired in production when iOS uploaded a
 which rejected it with `image exceeds 5 MB maximum: 6411204 bytes`.
 
 These tests pin the downsize contract:
-- Small images pass through unchanged (no wasted CPU)
+- Every image is re-encoded to strip EXIF/GPS metadata (Audit P2d), so a
+  meal photo's location never reaches Anthropic
 - Large images come out under the 4.5 MB safety margin
 - Output is always JPEG (smallest format Anthropic accepts)
 - Malformed input raises ValueError (becomes a 400 to the client)
@@ -58,20 +59,50 @@ def _b64(raw: bytes) -> str:
     return base64.b64encode(raw).decode("ascii")
 
 
-# ── Pass-through ────────────────────────────────────────────────────────
+# ── Small images: re-encoded to strip metadata (Audit P2d) ───────────────
 
 
-def test_small_image_passes_through_unchanged():
-    """An image already under the safety margin should not be re-encoded."""
+def test_small_image_is_reencoded_under_margin():
+    """An image under the size margin is no longer passed through unchanged —
+    it is re-encoded so EXIF/GPS is stripped (defense-in-depth). It must come
+    out a valid JPEG still under the safety margin."""
     raw = _make_image_bytes(800, 600)
     assert len(raw) < _DOWNSIZE_TARGET_BYTES
-    encoded = _b64(raw)
 
-    out_b64, out_media = _downsize_for_anthropic(encoded, "image/jpeg")
+    out_b64, out_media = _downsize_for_anthropic(_b64(raw), "image/jpeg")
 
-    # Identity: same string, same media type.
-    assert out_b64 == encoded
     assert out_media == "image/jpeg"
+    out_raw = base64.b64decode(out_b64)
+    assert len(out_raw) <= _DOWNSIZE_TARGET_BYTES
+    Image.open(BytesIO(out_raw)).verify()
+
+
+def test_exif_and_gps_metadata_is_stripped():
+    """EXIF (including GPS — where the meal was eaten) must not survive to
+    Anthropic. Embed EXIF tags + a GPS sub-IFD and assert the output has none."""
+    img = Image.frombytes("RGB", (400, 400), os.urandom(400 * 400 * 3))
+    exif = img.getexif()
+    exif[0x010F] = "MeldTestCamera"        # Make
+    exif[0x0132] = "2026:06:09 12:00:00"   # DateTime
+    gps_ifd = exif.get_ifd(0x8825)         # GPS sub-IFD
+    gps_ifd[1] = "N"
+    gps_ifd[2] = (40.0, 44.0, 0.0)
+    gps_ifd[3] = "W"
+    gps_ifd[4] = (73.0, 59.0, 0.0)
+    buf = BytesIO()
+    img.save(buf, format="JPEG", quality=92, exif=exif)
+    raw = buf.getvalue()
+
+    # Precondition: the input really carries EXIF + GPS.
+    in_exif = Image.open(BytesIO(raw)).getexif()
+    assert dict(in_exif), "test input should have EXIF"
+    assert dict(in_exif.get_ifd(0x8825)), "test input should have GPS"
+
+    out_b64, _ = _downsize_for_anthropic(_b64(raw), "image/jpeg")
+    out_exif = Image.open(BytesIO(base64.b64decode(out_b64))).getexif()
+
+    assert not dict(out_exif), "EXIF must be stripped"
+    assert not dict(out_exif.get_ifd(0x8825)), "GPS must be stripped"
 
 
 # ── Downsize the firing case ────────────────────────────────────────────

@@ -417,9 +417,18 @@ async def persist_associations(
 
         lit = literature_service.validate_correlation(legacy_source, legacy_target, r.direction)
         if lit:
+            # Record the match unconditionally (it is informational), but only
+            # UPGRADE the tier when the pair cleared this run's BH-FDR gate.
+            # Previously any literature hit jumped straight to the highest
+            # surfaceable tier even when fdr_adjusted_p failed the gate, so a
+            # statistically non-significant correlation could be presented as
+            # literature-backed evidence. Audit P3/D2 (round-1 #34). A
+            # literature match compensates for sample size, not for failing
+            # the user's own significance correction.
             r.literature_match = True
             r.literature_ref = lit.doi
-            r.confidence_tier = "literature_supported"
+            if r.fdr_adjusted_p < FDR_ALPHA:
+                r.confidence_tier = "literature_supported"
 
         # Upsert by (user, legacy_source, legacy_target, lag_days).
         existing = await db.execute(

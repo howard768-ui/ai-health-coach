@@ -111,6 +111,23 @@ jobs:
           #   - "pytest + ML gates + alembic round-trip"  (from workflow: Backend CI)
           # Ruff and type-imports checks are advisory; not in REQUIRED.
           REQUIRED=("Claude PR Review" "pytest + ML gates + alembic round-trip")
+
+          # iOS build gate: when a PR touches iOS sources, the iOS build+test
+          # must also pass before auto-merge. ios.yml is path-filtered, so on
+          # backend-only PRs the "xcodebuild + test" check-run never appears;
+          # requiring it unconditionally would hang every backend PR until the
+          # 30-minute timeout. Mirror ios.yml's path filter and only add the
+          # requirement when iOS sources actually changed.
+          #
+          # Closes the gap that let iOS CI stay red from 2026-05-03 onward: the
+          # iOS build was never a merge gate, so PRs with a broken iOS build
+          # auto-merged on backend + review green alone.
+          CHANGED_FILES=$(gh pr view "$PR_NUM" --json files --jq '.files[].path')
+          if echo "$CHANGED_FILES" | grep -qE '^(Meld/|MeldTests/|MeldSnapshotTests/|MeldUITests/|MeldNotificationServiceExtension/|maestro/|project\.yml$|\.github/workflows/ios\.yml$)'; then
+            echo "PR touches iOS sources; requiring 'xcodebuild + test' before merge."
+            REQUIRED+=("xcodebuild + test")
+          fi
+
           DEADLINE=$(( $(date +%s) + 1800 ))
 
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do

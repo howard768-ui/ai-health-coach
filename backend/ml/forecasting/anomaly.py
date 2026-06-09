@@ -58,11 +58,16 @@ async def detect_anomalies_for_user(
 ) -> AnomalyRun:
     """Scan the last ``lookback_days`` and emit anomaly rows.
 
-    Uses the residual_std from ``ml_baselines`` as the scale; falls back to
-    NaN (no flag) if no baseline exists for the metric. Cross-references
+    The z denominator is a robust (MAD-based) scale of the ensemble's own
+    forecast residuals in the scan window, so numerator and denominator come
+    from the same model; with fewer than 10 forecast/observation pairs it
+    falls back to the STL in-sample ``residual_std`` from ``ml_baselines``.
+    Metrics with no baseline are skipped entirely. Cross-references
     ``ml_change_points`` for two-signal BOCPD confirmation within a 48h
     window of each anomaly.
     """
+    import numpy as np
+
     from app.models.ml_baselines import MLBaseline, MLChangePoint, MLForecast
     from ml.features.store import get_feature_frame
     from ml.forecasting.residuals import FORECAST_METRICS
@@ -134,6 +139,14 @@ async def detect_anomalies_for_user(
         run.metrics_scanned.append(metric)
 
         series = frame[metric]
+
+        # First pass: collect every (date, observed, forecast) pair so the
+        # z denominator can come from the SAME model that produces the
+        # numerator. Dividing the ensemble's forecast error by the STL
+        # in-sample residual std was a train/serve mismatch: in-sample STL
+        # residuals understate out-of-sample ensemble error, inflating z
+        # and the false-positive anomaly rate. Audit P3/D2 (round-2 A49).
+        paired: list[tuple[object, float, float]] = []
         for feature_date, observed in series.items():
             if observed is None:
                 continue
@@ -146,9 +159,27 @@ async def detect_anomalies_for_user(
             forecast = best_forecast.get((metric, feature_date))
             if forecast is None or forecast.y_hat is None:
                 continue
+            paired.append((feature_date, observed_val, forecast.y_hat))
 
-            residual = observed_val - forecast.y_hat
-            z = residual / baseline.residual_std
+        if not paired:
+            continue
+
+        # Robust out-of-sample scale: MAD of the ensemble residuals in the
+        # scan window (x1.4826 ~ std under normality). MAD instead of std so
+        # the very anomalies being hunted cannot inflate the denominator and
+        # mask themselves. Below 10 pairs the estimate is too noisy; fall
+        # back to the documented STL-in-sample std (legacy behavior).
+        residuals = np.array([obs - y_hat for _, obs, y_hat in paired], dtype=float)
+        sigma = baseline.residual_std
+        if len(residuals) >= 10:
+            mad = float(np.median(np.abs(residuals - np.median(residuals))))
+            robust_sigma = 1.4826 * mad
+            if robust_sigma > 1e-9:
+                sigma = robust_sigma
+
+        for feature_date, observed_val, y_hat in paired:
+            residual = observed_val - y_hat
+            z = residual / sigma
             if abs(z) < threshold_z:
                 continue
 
@@ -172,7 +203,7 @@ async def detect_anomalies_for_user(
                     metric_key=metric,
                     observation_date=str(feature_date),
                     observed_value=observed_val,
-                    forecasted_value=forecast.y_hat,
+                    forecasted_value=y_hat,
                     residual=residual,
                     z_score=z,
                     direction=direction,

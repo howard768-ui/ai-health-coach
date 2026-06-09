@@ -167,9 +167,19 @@ struct DataSourceDetailView: View {
     private func connectSource() {
         switch source {
         case .oura:
-            // Open Oura OAuth flow in Safari
-            let url = APIClient.shared.serverRoot.appendingPathComponent("auth/oura")
-            UIApplication.shared.open(url)
+            // Audit P2d: fetch a CSRF-safe authorize URL from the authenticated
+            // /auth/oura/start (signed, single-user state), then open it in
+            // Safari. Replaces opening /auth/oura with no state (which 422'd)
+            // / a client-supplied apple_user_id (CSRF-prone).
+            Task {
+                do {
+                    let url = try await APIClient.shared.startOuraConnect()
+                    _ = await UIApplication.shared.open(url)
+                } catch {
+                    syncMessage = "Couldn't start Oura connection. Try again."
+                    DSHaptic.error()
+                }
+            }
         case .appleHealth:
             Task {
                 await HealthKitService.shared.requestAuthorization()

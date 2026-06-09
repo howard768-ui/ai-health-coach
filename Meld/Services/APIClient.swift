@@ -604,6 +604,28 @@ actor APIClient {
         return try await sendDecoding(request)
     }
 
+    /// Response from `POST /auth/oura/start`.
+    private struct OuraStartResponse: Decodable {
+        let authorize_url: String
+    }
+
+    /// Begin the Oura OAuth flow. POSTs to the authenticated
+    /// `/auth/oura/start`, which returns an Oura authorize URL carrying a
+    /// signed, single-user `state`. The caller opens the returned URL in
+    /// Safari. Audit P2d: replaces opening `/auth/oura` with no state (which
+    /// 422'd) / a client-supplied apple_user_id (CSRF-prone).
+    func startOuraConnect() async throws -> URL {
+        let url = serverRoot.appendingPathComponent("auth/oura/start")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        let (data, _) = try await authedData(for: request)
+        let decoded = try decoder.decode(OuraStartResponse.self, from: data)
+        guard let authorizeURL = URL(string: decoded.authorize_url) else {
+            throw APIError.decodingError
+        }
+        return authorizeURL
+    }
+
     func disconnectOura() async throws {
         let url = serverRoot.appendingPathComponent("api/user/oura")
         var request = URLRequest(url: url)

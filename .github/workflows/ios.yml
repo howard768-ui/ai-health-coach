@@ -105,10 +105,17 @@ jobs:
       # per-suite summaries from xcpretty were getting swallowed when any
       # target hit exit 65.
       #
-      # Unit + snapshot tests run INSIDE the Meld.app test host and work
-      # fine with CODE_SIGNING_ALLOWED=NO, which matches the Build step's
-      # known-good config. Any snapshot-tests failure uploads diff PNGs
-      # via the Upload snapshot failures step at the end of this job.
+      # Unit + snapshot tests run INSIDE the Meld.app test host. They must
+      # be ad-hoc signed (CODE_SIGN_IDENTITY="-"), NOT built with
+      # CODE_SIGNING_ALLOWED=NO: an unsigned test host has no
+      # application-identifier entitlement, so the simulator keychain has no
+      # access group and every SecItem call returns errSecMissingEntitlement
+      # (-34018). That broke all KeychainStore + AuthManager tests (27 of
+      # 111) silently from 2026-05-03 until the iOS gate was added. Ad-hoc
+      # signing applies the entitlements and gives the keychain a valid
+      # access group on the simulator (the same config the UI test step
+      # already uses). Any snapshot-tests failure uploads diff PNGs via the
+      # Upload snapshot failures step at the end of this job.
 
       - name: Test (unit)
         # MeldSnapshotTests is deliberately NOT run here. The ~50 committed
@@ -129,7 +136,7 @@ jobs:
             -configuration Debug \
             -only-testing:MeldTests \
             -skip-testing:MeldSnapshotTests \
-            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
             test 2>&1 | tee "$RUNNER_TEMP/xcodebuild-test-unit.log" | xcpretty --test --color
 

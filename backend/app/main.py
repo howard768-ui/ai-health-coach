@@ -180,6 +180,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# PHI cache hygiene (audit P3/E6): every /api/* response can carry PHI
+# (dashboard metrics, chat history, trends, meals, profile). Without
+# Cache-Control, intermediaries and client URL caches (iOS URLCache writes
+# to disk and lands in device backups) may persist those bodies. no-store
+# on the whole API surface: nothing under /api/ is cacheable-safe, and
+# blanket beats maintaining a PHI-route allowlist that rots. The iOS client
+# also disables its URLCache (defense-in-depth). /media (badge PNGs, no
+# PHI) and /healthz//readyz probes are intentionally not covered.
+@app.middleware("http")
+async def no_store_on_api(request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
+
 # Serve notification media (recovery badges, etc.)
 media_dir = Path(__file__).resolve().parent.parent / "media"
 media_dir.mkdir(exist_ok=True)

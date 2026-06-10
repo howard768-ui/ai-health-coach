@@ -44,14 +44,14 @@ async def test_health_probe_not_forced_no_store():
 
 
 @pytest.mark.asyncio
-async def test_existing_cache_control_not_clobbered():
-    """setdefault semantics: if a route ever sets its own Cache-Control,
-    the middleware must not overwrite it. Pinned via the waitlist route
-    (public, no PHI) only if it sets one; otherwise no-store applies."""
+async def test_header_present_on_validation_errors_too():
+    """422 validation responses are also /api/* bodies and must carry the
+    header. Uses an invalid payload so the route never touches the DB
+    (CI has no app tables; the middleware is what is under test)."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
-            "/api/waitlist/subscribe", json={"email": "cache-test@example.com"}
+            "/api/waitlist/subscribe", json={"email": "not-an-email"}
         )
-        # Whatever the route returns, the header must exist on /api/*.
-        assert "cache-control" in resp.headers
+        assert resp.status_code == 422
+        assert resp.headers.get("cache-control") == "no-store"

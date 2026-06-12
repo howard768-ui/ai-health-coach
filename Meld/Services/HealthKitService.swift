@@ -199,6 +199,18 @@ final class HealthKitService {
 
         return await withCheckedContinuation { (continuation: CheckedContinuation<Double?, Never>) in
             let guarded = ContinuationGuard<Double?>()
+
+            // Timeout escape hatch: if HK never calls back, fail to nil
+            // after the budget expires. Whichever fires first wins. The HK
+            // callback cancels this task so a completed query does not leave
+            // a sleeper alive for the rest of the 10s budget (these stack up
+            // fast during a multi-day sync). Audit P3/E7.
+            let timeoutTask = Task {
+                try? await Task.sleep(nanoseconds: Self.healthKitQueryTimeoutNanos)
+                guard !Task.isCancelled else { return }
+                guarded.tryResume(continuation: continuation, with: nil)
+            }
+
             let query = HKStatisticsQuery(
                 quantityType: type,
                 quantitySamplePredicate: predicate,
@@ -206,15 +218,9 @@ final class HealthKitService {
             ) { _, result, _ in
                 let value = result?.sumQuantity()?.doubleValue(for: unit)
                 guarded.tryResume(continuation: continuation, with: value)
+                timeoutTask.cancel()
             }
             store.execute(query)
-
-            // Timeout escape hatch: if HK never calls back, fail to nil
-            // after the budget expires. Whichever fires first wins.
-            Task {
-                try? await Task.sleep(nanoseconds: Self.healthKitQueryTimeoutNanos)
-                guarded.tryResume(continuation: continuation, with: nil)
-            }
         }
     }
 
@@ -228,6 +234,15 @@ final class HealthKitService {
 
         return await withCheckedContinuation { (continuation: CheckedContinuation<Double?, Never>) in
             let guarded = ContinuationGuard<Double?>()
+
+            // See querySum: cancelled by the HK callback so completed queries
+            // do not leave 10s sleepers alive. Audit P3/E7.
+            let timeoutTask = Task {
+                try? await Task.sleep(nanoseconds: Self.healthKitQueryTimeoutNanos)
+                guard !Task.isCancelled else { return }
+                guarded.tryResume(continuation: continuation, with: nil)
+            }
+
             let query = HKStatisticsQuery(
                 quantityType: type,
                 quantitySamplePredicate: predicate,
@@ -235,13 +250,9 @@ final class HealthKitService {
             ) { _, result, _ in
                 let value = result?.averageQuantity()?.doubleValue(for: unit)
                 guarded.tryResume(continuation: continuation, with: value)
+                timeoutTask.cancel()
             }
             store.execute(query)
-
-            Task {
-                try? await Task.sleep(nanoseconds: Self.healthKitQueryTimeoutNanos)
-                guarded.tryResume(continuation: continuation, with: nil)
-            }
         }
     }
 }

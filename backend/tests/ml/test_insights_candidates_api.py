@@ -114,7 +114,6 @@ async def test_candidates_route_uses_datetime_not_string_for_generated_at_compar
     historical context) doesn't false-positive.
     """
     import inspect
-    import re
     from app.routers import insights as insights_module
 
     src = inspect.getsource(insights_module.get_candidates)

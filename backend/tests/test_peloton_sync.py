@@ -32,7 +32,6 @@ os.environ.setdefault(
 from app.core.time import utcnow_naive
 from app.database import Base
 from app.models.peloton import PelotonToken, WorkoutRecord
-from app.services import peloton_sync as peloton_sync_module
 from app.services.peloton_sync import sync_user_data
 
 

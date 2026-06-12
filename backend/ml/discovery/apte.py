@@ -208,9 +208,8 @@ async def run_apte_for_experiment(
     Does NOT commit. Caller owns the transaction.
     """
     import numpy as np
-    from datetime import date, timedelta
+    from datetime import date
 
-    from sqlalchemy import select
 
     from app.models.ml_experiments import MLExperiment
     from ml.features.store import get_feature_frame

@@ -172,7 +172,6 @@ def test_groupkfold_no_user_leakage():
     from sklearn.model_selection import GroupKFold
 
     user_ids = ["a"] * 10 + ["b"] * 10 + ["c"] * 10 + ["d"] * 10 + ["e"] * 10
-    groups = np.arange(len(user_ids))
     user_groups = {u: i for i, u in enumerate(dict.fromkeys(user_ids))}
     sample_groups = np.array([user_groups[u] for u in user_ids])
 
@@ -211,7 +210,7 @@ async def test_train_ranker_pipeline_cold_start(db: AsyncSession):
     """With no real data and a low threshold, should bootstrap with synth."""
     from ml.ranking.trainer import train_ranker_pipeline
 
-    result = await train_ranker_pipeline(db, coldstart_threshold=0)
+    await train_ranker_pipeline(db, coldstart_threshold=0)
     # With threshold=0, it considers 0 real samples as "enough" but has
     # no data at all, so it should fall through to synth bootstrap.
     # The synth path requires generating users + running the discovery

@@ -27,7 +27,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.database import Base
 from app.models.correlation import UserCorrelation
 from app.models.health import HealthMetricRecord, SleepRecord, ActivityRecord
-from app.models.meal import FoodItemRecord, MealRecord
 # Register ORM models with Base.metadata before fixture create_all.
 from app.models import ml_baselines as _ml_baselines_models  # noqa: F401
 from app.models import ml_features as _ml_features_models  # noqa: F401
@@ -312,7 +311,7 @@ async def test_compute_associations_dynamic_pairs_expands_beyond_seeds(db):
 @pytest.mark.asyncio
 async def test_compute_associations_empty_when_no_data(db):
     """No data -> zero results, no crash."""
-    today = date.today()
+    date.today()
     results, report = await associations.compute_associations(db, USER, window_days=30)
     assert results == []
     assert report.pairs_with_enough_data == 0

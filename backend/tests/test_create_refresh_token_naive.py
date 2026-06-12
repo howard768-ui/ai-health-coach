@@ -19,7 +19,6 @@ Run: cd backend && uv run pytest tests/test_create_refresh_token_naive.py -v
 import os
 from datetime import datetime, timedelta, timezone
 
-import pytest
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-for-create-refresh-token-tests")
 

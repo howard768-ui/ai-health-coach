@@ -128,7 +128,7 @@ async def _seed_user(db_session, **kwargs) -> User:
 @pytest.mark.asyncio
 async def test_revoked_consent_revoked_marks_user_inactive(client, db_session, monkeypatch):
     """Apple webhook: consent-revoked event → user.is_active = False."""
-    user = await _seed_user(db_session, apple_user_id="001234.consent.0001")
+    await _seed_user(db_session, apple_user_id="001234.consent.0001")
 
     def fake_verify(_payload):
         return {"sub": "001234.consent.0001", "type": "consent-revoked", "event_time": 0}
@@ -150,7 +150,7 @@ async def test_revoked_consent_revoked_marks_user_inactive(client, db_session, m
 @pytest.mark.asyncio
 async def test_revoked_account_delete_marks_user_inactive(client, db_session, monkeypatch):
     """Apple webhook: account-delete event → user.is_active = False."""
-    user = await _seed_user(db_session, apple_user_id="001234.delete.0001")
+    await _seed_user(db_session, apple_user_id="001234.delete.0001")
 
     def fake_verify(_payload):
         return {"sub": "001234.delete.0001", "type": "account-delete", "event_time": 0}
@@ -169,7 +169,7 @@ async def test_revoked_account_delete_marks_user_inactive(client, db_session, mo
 @pytest.mark.asyncio
 async def test_revoked_email_disabled_does_not_deactivate_user(client, db_session, monkeypatch):
     """email-disabled is informational; user must remain active."""
-    user = await _seed_user(db_session, apple_user_id="001234.email.0001")
+    await _seed_user(db_session, apple_user_id="001234.email.0001")
 
     def fake_verify(_payload):
         return {"sub": "001234.email.0001", "type": "email-disabled", "event_time": 0}
@@ -283,7 +283,7 @@ async def test_delete_account_without_apple_refresh_token_skips_revoke(client, d
     """User who never captured an Apple refresh token (older account) → don't
     call revoke; just delete locally."""
     apple_id = "001234.no_refresh.0001"
-    user = await _seed_user(db_session, apple_user_id=apple_id)
+    await _seed_user(db_session, apple_user_id=apple_id)
     # Don't set apple_refresh_token; default is None
     await db_session.commit()
 

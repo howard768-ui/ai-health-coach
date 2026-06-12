@@ -17,7 +17,7 @@ from types import SimpleNamespace
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-audit-safety-tests")
 
 from app.core.pem import normalize_pem
-from app.main import _real_remote_address, _scrub_phi, _init_sentry
+from app.main import _real_remote_address, _scrub_phi
 
 
 # ── _scrub_phi: never let PII reach Sentry ─────────────────────────────

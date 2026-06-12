@@ -62,6 +62,8 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
+          # pipefail so the step exits with promptfoo's code, not tee's.
+          set -o pipefail
           npx promptfoo eval --no-cache -o results.json 2>&1 | tee eval-output.txt
 
       - name: Quality gates
@@ -148,6 +150,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
+          set -o pipefail
           npx promptfoo eval -c golden_data_fidelity.yaml --no-cache -o fidelity-results.json 2>&1 | tee fidelity-output.txt
 
       - name: Data fidelity gate
@@ -211,7 +214,13 @@ jobs:
         working-directory: evals
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: uv run python -m pytest test_coach_quality.py -v --tb=short 2>&1 | tee pytest-output.txt
+        # pipefail is mandatory here: GitHub's default shell is `bash -e {0}`
+        # WITHOUT pipefail, so `| tee` was silently converting pytest
+        # failures into a green step (2026-06-12 honesty sweep). Unlike the
+        # promptfoo steps, nothing downstream re-parses these results.
+        run: |
+          set -o pipefail
+          uv run python -m pytest test_coach_quality.py -v --tb=short 2>&1 | tee pytest-output.txt
 
       - name: Upload pytest results
         if: always()

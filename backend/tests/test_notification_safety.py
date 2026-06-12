@@ -12,7 +12,6 @@ os.environ.setdefault(
     "ENCRYPTION_KEY", "T0TXLkHFSeZRYGIIejSFVkhQrvRE-bWLkwXSkkdWiKQ="
 )
 
-import pytest
 
 from app.services.notification_safety import contains_numbers, safe_notification_text
 

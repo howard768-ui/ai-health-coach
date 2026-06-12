@@ -13,13 +13,12 @@ Sources:
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.notification import NotificationRecord, NotificationPreference
-from app.core.time import utcnow_naive
 
 logger = logging.getLogger("meld.anti_fatigue")
 

@@ -5,7 +5,6 @@ what the coach sends to the client: sanitize_output, parse_content_blocks,
 and flatten_to_markdown.
 """
 
-import pytest
 
 from app.services.content_blocks import (
     DataCardBlock,

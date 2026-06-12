@@ -6,7 +6,6 @@ All jobs check anti-fatigue gates before sending.
 
 import asyncio
 import logging
-from datetime import datetime
 
 import httpx
 import sentry_sdk
@@ -30,8 +29,6 @@ from app.services.oura_sync import sync_user_data as oura_sync
 from app.services.peloton_sync import sync_user_data as peloton_sync
 from app.services.garmin_sync import sync_user_data as garmin_sync
 from app.services.data_reconciliation import reconcile_day
-from app.services.correlation_engine import compute_correlations
-from app.services.literature import literature_service
 from app.services.oura_webhooks import list_subscriptions, renew_subscription
 from app.services.offline_eval import run_offline_eval
 from app.core.constants import ReadinessThreshold, StreakGoal, TEST_DEVICE_TOKEN, WeeklyReviewThreshold
@@ -114,7 +111,7 @@ async def _get_active_tokens(db, user_id: str) -> list:
     result = await db.execute(
         select(DeviceToken).where(
             DeviceToken.user_id == user_id,
-            DeviceToken.is_active == True,
+            DeviceToken.is_active,
             DeviceToken.token != TEST_DEVICE_TOKEN,
         )
     )
@@ -649,7 +646,6 @@ async def baselines_job():
     yet. Phase 3 wires L2 associations to use baselines; Phase 4 wires
     insight candidates to use anomalies.
     """
-    from datetime import date as _date
 
     from ml import api as ml_api
 

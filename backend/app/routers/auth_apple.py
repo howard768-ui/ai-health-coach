@@ -34,7 +34,6 @@ from app.core.apple import (
     verify_apple_server_notification,
 )
 from app.core.security import (
-    REFRESH_TOKEN_EXPIRE_DAYS,
     create_access_token,
     create_refresh_token,
     hash_refresh_token,

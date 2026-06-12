@@ -8,7 +8,6 @@ All notifications follow the wiki rules:
 """
 
 import logging
-from datetime import datetime
 
 import anthropic
 

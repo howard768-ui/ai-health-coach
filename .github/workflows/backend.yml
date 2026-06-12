@@ -299,15 +299,45 @@ jobs:
 
       - name: Lint with ruff (including ml/ and tests/ml/)
         working-directory: backend
-        # Allow warnings but fail on errors. We're not trying to enforce a
-        # zero-warning bar yet — just catch syntax and obvious bugs.
+        # Honest gate since the 2026-06-12 honesty sweep. The old
+        # `|| echo ::warning` swallowed ruff's exit code entirely (errors
+        # included) while the comment claimed "fail on errors"; 126 findings
+        # had accumulated behind it. Baseline was fixed in the same PR that
+        # flipped this, so red here means a NEW finding.
         run: |
-          uv tool run ruff check app/ ml/ tests/ --output-format=github || echo "::warning::ruff found issues"
+          uv tool run ruff check app/ ml/ tests/ --output-format=github
 
-      - name: Format check
+      - name: Format check (advisory)
         working-directory: backend
+        # Honestly labeled advisory: ~150 files predate ruff format and a
+        # mass reformat is a dedicated follow-up PR (do not bury it in a
+        # feature diff). When that lands, drop the `|| echo` and the
+        # "(advisory)" suffix together.
         run: |
-          uv tool run ruff format --check app/ ml/ tests/ || echo "::warning::ruff format would reformat files"
+          uv tool run ruff format --check app/ ml/ tests/ || echo "::warning::ruff format would reformat files (advisory until the baseline reformat PR lands)"
+
+  phi-log-guardrails:
+    name: PHI log guardrails
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Forbid credential values in backend log statements
+        # Audit follow-up (2026-06-12): credential VALUES in logs leak into
+        # aggregators and backups. This forbids token/key identifiers inside
+        # logger/print calls in backend code. Log text ABOUT tokens is fine
+        # if it avoids the exact identifiers; values and f-string
+        # interpolations of them are not. Zero matches at introduction.
+        run: |
+          MATCHES=$(grep -rnE '(logger|logging)\.(info|debug|warning|error|exception)\([^)]*(access_token|refresh_token|jwt_secret|api_key)' backend/app/ backend/ml/ || true)
+          if [ -n "$MATCHES" ]; then
+            echo "$MATCHES"
+            echo "::error::Log statement references a credential identifier. Log an event description, not the credential."
+            exit 1
+          fi
+          echo "No credential identifiers in log statements."
 
   type-check:
     name: type imports

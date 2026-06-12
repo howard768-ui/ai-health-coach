@@ -6,7 +6,6 @@ pylotoncycle handles the auth flow using Peloton's known client_id.
 
 import logging
 import asyncio
-from datetime import date, timedelta
 
 logger = logging.getLogger("meld.peloton")
 

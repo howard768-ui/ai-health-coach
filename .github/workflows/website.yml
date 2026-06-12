@@ -44,14 +44,17 @@ jobs:
         working-directory: website
         run: npm run build
 
-      - name: Check for broken internal links
+      - name: Verify build output exists
         working-directory: website
+        # Renamed in the 2026-06-12 honesty sweep. The old name ("Check for
+        # broken internal links") claimed a link check that never existed:
+        # the step only listed dist/. A real internal link check (e.g.
+        # lychee --offline against dist/) is a welcome follow-up, added as a
+        # NEW honestly named step and verified on a PR that actually
+        # triggers this workflow.
         run: |
-          # Verify all internal href="#" and href="/" links point to files
-          # that exist in the build output (dist/).
-          echo "Checking build output exists..."
           ls -la dist/
-          echo "Build output OK"
+          echo "Build output present"
 
   lighthouse:
     name: Lighthouse Audit

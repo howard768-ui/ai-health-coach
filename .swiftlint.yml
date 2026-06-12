@@ -1,0 +1,29 @@
+# SwiftLint baseline, established 2026-06-12 (CI honesty sweep).
+#
+# Context: the CI step ran non-blocking from the start and stock rules
+# accumulated 411 violations (184 serious) across 119 files. This config
+# relaxes exactly the two mass-violated stylistic rules so the gate can be
+# BLOCKING today without a 119-file churn commit:
+#   - identifier_name: 213 violations, 180 of the 184 serious (short names
+#     like `x`, `y`, `vm`, and uppercase constants like `M`)
+#   - line_length: 58 violations at the stock 120/200 thresholds
+#
+# Ratchet plan: run `swiftlint --fix` on a Mac for the autocorrectable rules
+# (trailing_comma, implicit_optional_initialization, ...), then tighten this
+# file rule by rule. Do not relax anything further without a violation count
+# justifying it in the PR description.
+
+identifier_name:
+  min_length:
+    warning: 1
+    error: 1
+  max_length:
+    warning: 60
+    error: 80
+  validates_start_with_lowercase: warning
+
+line_length:
+  warning: 150
+  error: 300
+  ignores_urls: true
+  ignores_comments: true

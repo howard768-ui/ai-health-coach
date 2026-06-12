@@ -7,11 +7,9 @@ When Oura sends a webhook, we trigger a sync + coaching notification.
 import asyncio
 import json as _json
 import logging
-from datetime import datetime
 
 import httpx
 from fastapi import APIRouter, Request, Query, Depends
-from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -110,7 +108,7 @@ async def oura_webhook_receiver(request: Request, db: AsyncSession = Depends(get
     # Per-user throttle: at most 1 sync per 60s regardless of webhook count.
     # Prevents a webhook flood from exhausting Oura API quota or Claude budget.
     # In-memory store is fine for single-instance Railway deploy.
-    from datetime import datetime, timedelta
+    from datetime import timedelta
     if not hasattr(oura_webhook_receiver, "_last_sync_at"):
         oura_webhook_receiver._last_sync_at = {}  # type: ignore[attr-defined]
     last_sync_map = oura_webhook_receiver._last_sync_at  # type: ignore[attr-defined]

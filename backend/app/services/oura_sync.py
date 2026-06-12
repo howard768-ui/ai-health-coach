@@ -136,7 +136,6 @@ async def sync_user_data(db: AsyncSession, user_id: str) -> dict:
         session_efficiency = session.get("efficiency")  # 0-100 percentage
 
         # Parse bedtime timestamps from session data
-        contributors = day.get("contributors", {})
         bedtime_start = _parse_time(session.get("bedtime_start"))
         bedtime_end = _parse_time(session.get("bedtime_end"))
 

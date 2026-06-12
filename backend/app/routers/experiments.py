@@ -13,7 +13,7 @@ Shadow-gated behind ``ml_shadow_apte``.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel

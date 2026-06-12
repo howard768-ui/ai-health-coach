@@ -30,7 +30,6 @@ from sqlalchemy import select
 
 if TYPE_CHECKING:
     import numpy as np
-    import pandas as pd
     from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)

@@ -232,10 +232,16 @@ def verify_apns_configured() -> None:
     if not (settings.apns_key_content or settings.apns_key_path):
         logger.info("APNs not configured (push disabled) — skipping verify")
         return
-    pem = apns_client._load_private_key()
     try:
+        # Inside the try: _load_private_key raises FileNotFoundError when
+        # APNS_KEY_PATH points at a missing file (any fresh checkout without
+        # the .p8, every CI runner). Outside the try it crashed the whole
+        # app at startup, violating this function's own warn-and-continue
+        # contract. SIWA's twin (core/apple.py verify_siwa_configured) had
+        # it right; this now matches.
+        pem = apns_client._load_private_key()
         validate_pem_loads(pem, label="APNs")
-    except PemConfigError as e:
+    except (PemConfigError, ValueError, FileNotFoundError) as e:
         # Drop the cached singleton so a subsequent fix + retry actually
         # re-reads the env. Both the PEM AND the JWT signed with it must
         # be cleared together (PR E hygiene fix). Do NOT raise — let the

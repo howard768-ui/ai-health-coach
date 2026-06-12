@@ -192,3 +192,23 @@ def test_apns_valid_pem_no_error(monkeypatch, caplog, valid_es256_pem):
 
     error_records = [r for r in caplog.records if r.levelname == "ERROR"]
     assert not error_records, f"expected no errors, got: {[r.message for r in error_records]}"
+
+
+def test_apns_missing_key_file_logs_error_does_not_raise(monkeypatch, caplog):
+    """Configured key PATH pointing at a missing file: log error, do not
+    raise. Regression for the 2026-06-12 finding: _load_private_key ran
+    OUTSIDE the try in verify_apns_configured, so any fresh checkout or CI
+    runner without the .p8 crashed the whole app at startup, violating the
+    function's own warn-and-continue contract."""
+    from app.services.apns import apns_client
+
+    apns_client._reset_cache()  # a prior test may have cached a valid key
+    monkeypatch.setattr(settings, "apns_key_content", None)
+    monkeypatch.setattr(settings, "apns_key_path", "/nonexistent/AuthKey_TEST.p8")
+
+    with caplog.at_level(logging.ERROR, logger="meld.apns"):
+        verify_apns_configured()  # must not raise
+
+    error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(error_records) >= 1
+    assert "APNs key parse FAILED" in error_records[0].message

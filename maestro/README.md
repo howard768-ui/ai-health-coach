@@ -18,29 +18,46 @@ maestro/
     auth_bypass.yaml   Shared launch + auth-skip preamble (15 of 16 flows).
 ```
 
-## Why backend/ is quarantined
+## How backend/ runs (un-quarantined 2026-06-12)
 
 Simulator builds hard-pin the API base URL to `http://127.0.0.1:8000/api`
-(`Meld/Services/APIClient.swift`) and CI starts no backend, so these flows
-fail deterministically: `13`/`14` assert metric labels that only render with
-data, and the coach/meals flows depend on live responses. They have NEVER
-passed in CI (verified back to the first run that executed flows,
-2026-04-20). Re-enable them once CI gets a seeded local backend, which needs:
+(`Meld/Services/APIClient.swift`). The "Maestro E2E (backend)" job in
+ios.yml runs these six flows against a real seeded local backend on main
+pushes, the nightly schedule, and manual dispatch (not on PRs: ~25 macOS
+runner minutes of live-endpoint testing is the wrong per-push spend). The
+backend contract:
 
-1. A `uvicorn` step in the Maestro job with an ephemeral DB.
-2. The `/auth/dev-login` route the app already calls in UI-test mode
-   (`APIClient.devLogin()`); it does not exist in `backend/app` today.
-3. A seed script inserting a test user plus ~7 days of sleep/HRV records.
+1. `uvicorn` on 127.0.0.1:8000 with a file SQLite DB, `alembic upgrade
+   head` first (`/readyz` needs the alembic_version table).
+2. `POST /auth/dev-login` (development/test only, 404 elsewhere) mints the
+   token pair the shipped `APIClient.devLogin()` expects.
+3. `app/scripts/seed_e2e.py` seeds 7 days of sleep/HRV records for the
+   same fixed user; that one dataset satisfies flows 13 and 14.
+4. `ANTHROPIC_API_KEY` must be a NON-EMPTY dummy: empty raises a TypeError
+   that escapes the `except anthropic.APIError` clauses and 500s
+   `/api/dashboard`. No real key is needed; coach replies degrade to the
+   deterministic fallback.
 
-Until then a nightly run of `backend/` would be guaranteed red, which is
-alarm noise, not signal.
+Before these flows existed in CI they had NEVER passed (verified back to
+the first run that executed flows, 2026-04-20): the old job had no backend
+and `|| true` hid the permanent failures.
 
 ## Running locally
 
 ```
-maestro test maestro/flows/smoke/            # what CI runs
-maestro test maestro/flows/backend/          # needs local backend on :8000
+maestro test maestro/flows/smoke/            # what PR CI runs
+maestro test maestro/flows/backend/          # needs seeded backend on :8000
 maestro test maestro/flows/smoke/12_onboarding_welcome.yaml   # standalone only
+```
+
+Seeded backend for local backend-flow runs:
+
+```
+cd backend
+export DATABASE_URL=sqlite+aiosqlite:////tmp/meld-e2e.db ANTHROPIC_API_KEY=ci-dummy-key
+uv run python -m alembic upgrade head
+uv run python -m app.scripts.seed_e2e
+uv run python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 ## Conventions

@@ -422,22 +422,36 @@ jobs:
           # on 2026-06-09.
           if-no-files-found: error
 
+      - name: Bundle Maestro debug output
+        if: always()
+        run: |
+          # Two reasons to tar instead of uploading maestro-debug/ directly:
+          # 1. Maestro's real per-flow logs live in maestro-debug/.maestro/,
+          #    a hidden dir upload-artifact silently drops by default (that
+          #    left the 2026-06-10 11-minute permission hang with zero
+          #    surviving driver logs).
+          # 2. Maestro names per-flow debug files after flow display names,
+          #    which can contain characters upload-artifact rejects: the
+          #    colon in "Tab Bar IA: 5 tabs..." failed the first run of the
+          #    repaired job. A tarball is immune to flow naming.
+          if [ -d maestro-debug ]; then
+            tar -czf maestro-debug.tgz maestro-debug/
+            ls -la maestro-debug.tgz
+          else
+            echo "maestro-debug/ absent; nothing to bundle"
+          fi
+
       - name: Upload Maestro debug (screenshots + a11y dumps)
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: maestro-debug
           path: |
-            maestro-debug/
+            maestro-debug.tgz
             auth-debug.txt
             diag-screen-after-bypass.png
             diag-hierarchy.json
           if-no-files-found: ignore
-          # Maestro writes its real per-flow logs to maestro-debug/.maestro/,
-          # a dot-prefixed directory that upload-artifact silently drops by
-          # default. That left the 2026-06-10 11-minute permission hang with
-          # zero surviving driver logs.
-          include-hidden-files: true
 
   swiftlint:
     name: SwiftLint

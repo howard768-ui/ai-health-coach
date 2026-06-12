@@ -29,11 +29,15 @@ on:
 
   workflow_dispatch:
 
-# Cancel any in-flight run for the same workflow + ref. Saves runner
-# minutes when a PR pushes new commits faster than CI completes.
+# Cancel any in-flight run for the same workflow + ref, but only for PRs.
+# Saves runner minutes when a PR pushes new commits faster than CI completes.
+# On main, successive auto-merges share the same ref, so cancel-in-progress
+# was killing every in-flight main run before its Maestro job finished:
+# 2 of the 3 main-push iOS runs around 2026-06-09 ended "cancelled" and main
+# had no completed E2E verification at all. Main runs now queue instead.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-and-test:
@@ -98,6 +102,30 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             build 2>&1 | tee "$RUNNER_TEMP/xcodebuild-build.log" | xcpretty
+
+      # Hand the freshly built .app to the Maestro job so it stops rebuilding
+      # the identical bundle from scratch (10 to 13.5 min observed per run,
+      # 42-44% of the old Maestro job budget). ditto is mandatory: zipping
+      # through upload-artifact directly strips executable bits and symlinks
+      # from .app bundles, producing an uninstallable app.
+      - name: Package app for E2E (Maestro)
+        run: |
+          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData \
+            -name "Meld.app" \
+            -path "*/Debug-iphonesimulator/*" \
+            -not -path "*.xctest/*" \
+            -not -path "*-Runner.app/*" \
+            | head -1)
+          echo "Packaging: $APP_PATH"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Info.plist"
+          ditto -c -k --keepParent "$APP_PATH" "$RUNNER_TEMP/Meld-app.zip"
+
+      - name: Upload app for E2E (Maestro)
+        uses: actions/upload-artifact@v7
+        with:
+          name: meld-app-sim
+          path: ${{ runner.temp }}/Meld-app.zip
+          retention-days: 2
 
       # Split test invocations by target type because they need different
       # signing settings and have different failure modes. Running them in
@@ -232,83 +260,107 @@ jobs:
     name: Maestro E2E
     needs: build-and-test
     runs-on: macos-15
-    # Bumped from 20 to 40. This job was previously skipping because
-    # build-and-test was red; now that the build passes, the full
-    # Maestro flow set (12 flows) runs end-to-end and takes ~24 minutes
-    # on the macos-15 runner — just over the previous 20-minute job
-    # timeout. `|| true` on the `maestro test` step already swallows
-    # per-flow exit codes; the timeout here is about wall-clock ceiling.
-    timeout-minutes: 40
+    # Restructured 2026-06-12 after every run at the 16-flow count was being
+    # cancelled at the old 40-minute ceiling (setup alone ate 16m42s-17m41s,
+    # and a healthy full suite needed 26m10s of flow time on top: best case
+    # ~43 min, so the ceiling was mathematically unreachable). Changes:
+    #   1. The app bundle is downloaded from the build-and-test job instead
+    #      of being rebuilt here (saves 10 to 13.5 min per run).
+    #   2. Only maestro/flows/smoke/ (UI-local flows) runs in CI. The
+    #      backend-data flows live in maestro/flows/backend/ and stay
+    #      quarantined until CI has a seeded local backend. See
+    #      maestro/README.md.
+    #   3. `|| true` is gone: assertion failures now fail this job. Maestro
+    #      E2E is NOT in the auto-merge gate's REQUIRED set, so this cannot
+    #      block or slow Tier 0 auto-merges; it is honest signal only.
+    #      Previously a run where the iOS driver timed out and ZERO flows
+    #      executed reported green (runs 27218539765 / 27224907237).
+    # Budget: download+unpack ~2m, boot+install ~2m, driver startup up to 5m,
+    # 10 smoke flows ~12-15m, headroom for the 4-6x macos-15 runner variance.
+    timeout-minutes: 30
 
     env:
-      DESTINATION: 'platform=iOS Simulator,name=iPhone 16 Pro'
+      # The Maestro iOS driver's default startup wait is shorter than what a
+      # loaded macos-15 runner needs: two June 9 runs aborted with
+      # IOSDriverTimeoutException before any flow ran. 5 minutes of headroom.
+      MAESTRO_DRIVER_STARTUP_TIMEOUT: "300000"
+      MAESTRO_CLI_NO_ANALYTICS: "1"
 
     steps:
       - uses: actions/checkout@v6
 
       - name: Install Maestro
+        # Pinned: the unpinned installer drifts (cli-2.6.1 shipped mid-debug
+        # on 2026-06-12, changing driver failure timing between consecutive
+        # runs of the same workflow). Bump deliberately.
         run: |
-          curl -Ls "https://get.maestro.mobile.dev" | bash
+          curl -Ls "https://get.maestro.mobile.dev" | MAESTRO_VERSION=2.6.1 bash
           echo "$HOME/.maestro/bin" >> $GITHUB_PATH
 
-      - name: Install xcodegen
-        run: brew install xcodegen
+      - name: Download app from build-and-test
+        uses: actions/download-artifact@v8
+        with:
+          name: meld-app-sim
+          path: ${{ runner.temp }}/e2e-app
 
-      - name: Build app
-        # Use plain `build`, not `build-for-testing`. The Maestro job drives
-        # the live app through the simulator; it does not run XCTest.
-        #
-        # `| tail -5` was hiding build failures (the last 5 lines of a
-        # failing build are usually summary counts, not error messages)
-        # which was the real root cause of the earlier "Missing bundle ID"
-        # simctl error: the build had 4 Swift errors and produced an
-        # incomplete .app. Removed so failures surface clearly.
+      - name: Unpack app
         run: |
-          set -o pipefail
-          xcodegen generate
-          xcodebuild \
-            -project Meld.xcodeproj \
-            -scheme Meld \
-            -destination "$DESTINATION" \
-            -configuration Debug \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            build
+          ditto -x -k "$RUNNER_TEMP/e2e-app/Meld-app.zip" "$RUNNER_TEMP/e2e-app"
+          ls "$RUNNER_TEMP/e2e-app"
 
+      # Same prewarm pattern as the UI-test step in build-and-test: boot by
+      # UDID, wait for bootstatus, give SpringBoard time to settle. The old
+      # bare `simctl boot || true` here did not wait, which contributed to
+      # the driver startup races.
       - name: Boot Simulator
+        id: prewarm
         run: |
-          xcrun simctl boot "iPhone 16 Pro" || true
+          DEVICE_ID=$(xcrun simctl list devices available \
+            | grep "iPhone 16 Pro (" \
+            | head -1 \
+            | grep -oE '[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}')
+          if [ -z "$DEVICE_ID" ]; then
+            echo "::error::Could not find iPhone 16 Pro simulator UDID"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          echo "Booting simulator $DEVICE_ID"
+          xcrun simctl boot "$DEVICE_ID" 2>/dev/null || true
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+          sleep 8
           xcrun simctl list devices booted
+          echo "device_id=$DEVICE_ID" >> "$GITHUB_OUTPUT"
 
       - name: Install app
         run: |
-          # Find the app-under-test bundle, excluding any nested .xctest or
-          # -Runner.app path just in case a future build introduces them.
-          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData \
-            -name "Meld.app" \
-            -path "*/Debug-iphonesimulator/*" \
-            -not -path "*.xctest/*" \
-            -not -path "*-Runner.app/*" \
-            | head -1)
+          APP_PATH="$RUNNER_TEMP/e2e-app/Meld.app"
           echo "Installing: $APP_PATH"
           # Sanity-check Info.plist so the CI log points at the root cause
-          # if the build ever regresses, rather than a cryptic simctl error.
+          # if the artifact ever regresses, rather than a cryptic simctl error.
           /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Info.plist"
-          xcrun simctl install booted "$APP_PATH"
+          xcrun simctl install "${{ steps.prewarm.outputs.device_id }}" "$APP_PATH"
 
-      - name: Run Maestro flows
+      - name: Run Maestro flows (smoke set)
+        # Step-level timeout, NOT just the job-level one: when the job-level
+        # timeout fires, GitHub hard-kills the runner and the always() upload
+        # steps below never execute, which is how the 2026-06-10 incident lost
+        # every artifact. A step timeout kills only this step, so the junit
+        # and debug output survive for post-mortem.
+        timeout-minutes: 20
         run: |
           # --debug-output dumps per-flow accessibility trees + screenshots
           # so post-mortem artifact inspection can tell us what the
           # screen actually looked like when an assertion failed. This
           # is the diagnostic path for the PR #51 tab-bar regression.
-          maestro test maestro/flows/ \
+          maestro test maestro/flows/smoke/ \
             --format junit \
             --output maestro-results.xml \
-            --debug-output maestro-debug/ || true
+            --debug-output maestro-debug/
 
       - name: Pull auth-debug.txt from simulator
-        if: always()
+        # failure() not always(): on green runs these diagnostics added
+        # ~4.5 min of macOS runner time for nothing.
+        if: failure()
         run: |
           # MeldApp writes this file at boot inside #if DEBUG with the
           # state of its isUITesting flag + launch args + UserDefaults.
@@ -327,7 +379,7 @@ jobs:
           fi
 
       - name: Diagnostic snapshot (a11y hierarchy + screenshot)
-        if: always()
+        if: failure()
         run: |
           # --debug-output didn't produce files on the previous PR #55 run,
           # so grab the state directly. Launch the app fresh with the same
@@ -365,7 +417,10 @@ jobs:
         with:
           name: maestro-results
           path: maestro-results.xml
-          if-no-files-found: ignore
+          # error, not ignore: a "green" run that produced no junit means the
+          # driver never ran a flow. `ignore` hid exactly that for two runs
+          # on 2026-06-09.
+          if-no-files-found: error
 
       - name: Upload Maestro debug (screenshots + a11y dumps)
         if: always()
@@ -378,6 +433,11 @@ jobs:
             diag-screen-after-bypass.png
             diag-hierarchy.json
           if-no-files-found: ignore
+          # Maestro writes its real per-flow logs to maestro-debug/.maestro/,
+          # a dot-prefixed directory that upload-artifact silently drops by
+          # default. That left the 2026-06-10 11-minute permission hang with
+          # zero surviving driver logs.
+          include-hidden-files: true
 
   swiftlint:
     name: SwiftLint

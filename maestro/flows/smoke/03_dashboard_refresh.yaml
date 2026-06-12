@@ -1,7 +1,7 @@
 appId: com.heymeld.app
 name: "Dashboard — Pull to refresh does not crash"
 ---
-- runFlow: ../helpers/auth_bypass.yaml
+- runFlow: ../../helpers/auth_bypass.yaml
 
 - tapOn:
     id: "tab-home"

@@ -1,7 +1,7 @@
 appId: com.heymeld.app
 name: "Dashboard — Real metric values load (not '--' or '0')"
 ---
-- runFlow: ../helpers/auth_bypass.yaml
+- runFlow: ../../helpers/auth_bypass.yaml
 
 - tapOn:
     id: "tab-home"

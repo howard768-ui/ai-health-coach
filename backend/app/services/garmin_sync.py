@@ -4,13 +4,12 @@ Follows the same pattern as peloton_sync.py.
 """
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.garmin import GarminToken, GarminDailyRecord
-from app.models.peloton import WorkoutRecord  # Shared workout model
 from app.models.health import HealthMetricRecord
 from app.services.garmin import GarminClient
 

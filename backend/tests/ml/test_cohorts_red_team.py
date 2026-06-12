@@ -210,7 +210,6 @@ async def test_deletion_removes_anonymized_vectors(db: AsyncSession):
     """After deletion, no anonymized vectors remain for the user."""
     from app.core.time import utcnow_naive
     from app.models.ml_cohorts import MLAnonymizedVector, MLCohortConsent
-    from ml import api as ml_api
 
     # Create consent + vector.
     now = utcnow_naive()

@@ -19,7 +19,6 @@ from app.services.coach_engine import (
     SafetyCheck,
     Deliberator,
     ModelTier,
-    RoutingDecision,
 )
 
 

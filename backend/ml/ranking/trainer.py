@@ -16,9 +16,8 @@ Entry point is ``train_ranker_pipeline``, called from ``ml.api``.
 
 from __future__ import annotations
 
-import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -214,7 +213,7 @@ async def generate_synth_training_data(
     from ml import api as ml_api
     from datetime import date, timedelta
 
-    rng = np.random.default_rng(seed)
+    np.random.default_rng(seed)
 
     manifest = await ml_api.generate_synth_cohort(
         db, n_users=n_users, days=90, seed=seed

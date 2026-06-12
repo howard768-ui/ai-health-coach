@@ -465,8 +465,34 @@ jobs:
         run: brew install swiftlint
 
       - name: Run SwiftLint
-        # Don't fail the build on lint warnings — we haven't established a
-        # baseline yet. This will become blocking once the codebase is clean.
+        # Blocking since the 2026-06-12 honesty sweep: error-severity
+        # violations fail the job (warnings do not; no --strict yet). The
+        # old `|| echo` hid 411 violations (184 serious) for the project's
+        # entire life. Baseline rules live in /.swiftlint.yml with a ratchet
+        # plan. Scope widened to the two targets the old invocation missed.
         run: |
-          swiftlint --reporter github-actions-logging Meld/ MeldTests/ MeldSnapshotTests/ || \
-            echo "::warning::SwiftLint found issues"
+          swiftlint --reporter github-actions-logging Meld/ MeldTests/ MeldSnapshotTests/ MeldUITests/ MeldNotificationServiceExtension/
+
+  ios-log-guardrails:
+    name: iOS log guardrails
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Forbid token values in print/Log statements
+        # Audit follow-up (2026-06-12), iOS twin of the backend
+        # phi-log-guardrails job. Forbids Swift string interpolation of
+        # token-ish identifiers inside print/Log calls (the PR-K class:
+        # `print("token: \(pair.accessToken.prefix(20))")`). Messages ABOUT
+        # tokens without interpolated values stay legal. Zero matches at
+        # introduction. Runs on ubuntu: grep needs no macOS runner minutes.
+        run: |
+          MATCHES=$(grep -rnE '(print|Log\.[a-z]+\.(info|debug|error|warning|notice|fault))\([^)]*\\\([^)]*([tT]oken|jwt|[bB]earer)' Meld/ MeldNotificationServiceExtension/ || true)
+          if [ -n "$MATCHES" ]; then
+            echo "$MATCHES"
+            echo "::error::Log statement interpolates a credential-bearing value. Log an event description, not the credential."
+            exit 1
+          fi
+          echo "No credential-value logging found."

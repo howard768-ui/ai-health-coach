@@ -1,6 +1,5 @@
 import logging
 import time
-from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +14,6 @@ from app.models.user import User
 from app.services.coach_engine import CoachEngine
 from app.services.content_blocks import (
     ContentBlock,
-    DataCardBlock,
     TextBlock,
     flatten_to_markdown,
     parse_content_blocks,

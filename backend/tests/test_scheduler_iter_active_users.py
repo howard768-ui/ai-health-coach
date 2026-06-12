@@ -16,7 +16,6 @@ Run: cd backend && uv run python -m pytest tests/test_scheduler_iter_active_user
 
 import os
 from datetime import timedelta
-from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio

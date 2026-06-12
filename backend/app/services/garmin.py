@@ -6,7 +6,7 @@ The library is synchronous — wrap calls in asyncio.to_thread() for async backe
 
 import logging
 import asyncio
-from datetime import date, timedelta
+from datetime import date
 
 logger = logging.getLogger("meld.garmin")
 

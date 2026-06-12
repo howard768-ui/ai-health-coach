@@ -22,7 +22,7 @@ os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 os.environ.setdefault("ENCRYPTION_KEY", "T0TXLkHFSeZRYGIIejSFVkhQrvRE-bWLkwXSkkdWiKQ=")
 os.environ.setdefault("ANTHROPIC_API_KEY", "fake-key-tests-dont-call-anthropic")
 
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from unittest.mock import MagicMock
 
 import httpx

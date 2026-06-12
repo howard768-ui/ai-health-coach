@@ -1407,8 +1407,7 @@ async def get_cohort_status(db: "AsyncSession", user_id: str) -> dict:
     """Get opt-in status + cluster membership for a user."""
     from sqlalchemy import select
 
-    from app.models.ml_cohorts import MLAnonymizedVector, MLCohort, MLCohortConsent
-    from ml.cohorts.anonymize import encrypt_user_id, get_rotating_key
+    from app.models.ml_cohorts import MLCohortConsent
 
     existing = await db.execute(
         select(MLCohortConsent).where(MLCohortConsent.user_id == user_id)

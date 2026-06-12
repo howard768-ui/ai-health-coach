@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import os
 
-import pytest
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 os.environ.setdefault("ENCRYPTION_KEY", "T0TXLkHFSeZRYGIIejSFVkhQrvRE-bWLkwXSkkdWiKQ=")
@@ -24,7 +23,6 @@ import numpy as np
 from ml.discovery.apte import (
     compute_apte_permutation,
     assess_autocorrelation,
-    MIN_OBSERVATIONS,
 )
 
 

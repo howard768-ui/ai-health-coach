@@ -16,7 +16,6 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "sk-ant-test-not-used")
 
 import anthropic
 import httpx
-import pytest
 
 from app.services.coach_engine import CoachEngine
 

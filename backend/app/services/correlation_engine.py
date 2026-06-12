@@ -20,11 +20,10 @@ Sources:
 
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Optional
 
-from sqlalchemy import select, and_
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.health import SleepRecord, HealthMetricRecord
@@ -201,7 +200,7 @@ async def collect_metric_data(
             .where(
                 HealthMetricRecord.user_id == user_id,
                 HealthMetricRecord.metric_type == "steps",
-                HealthMetricRecord.is_canonical == True,
+                HealthMetricRecord.is_canonical,
                 HealthMetricRecord.date >= start_date,
             )
         )

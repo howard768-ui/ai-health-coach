@@ -5,7 +5,6 @@ test notifications, and open tracking.
 """
 
 import logging
-from datetime import datetime
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -114,7 +113,7 @@ async def send_test_notification(
     result = await db.execute(
         select(DeviceToken).where(
             DeviceToken.user_id == user_id,
-            DeviceToken.is_active == True,
+            DeviceToken.is_active,
             DeviceToken.token != TEST_DEVICE_TOKEN,
         )
     )
@@ -201,7 +200,7 @@ async def send_test_by_category(
     result = await db.execute(
         select(DeviceToken).where(
             DeviceToken.user_id == user_id,
-            DeviceToken.is_active == True,
+            DeviceToken.is_active,
             DeviceToken.token != TEST_DEVICE_TOKEN,
         )
     )

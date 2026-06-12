@@ -21,7 +21,6 @@ triage.
 
 import logging
 import random
-from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -112,7 +111,7 @@ async def pick_template(
         select(NotificationTemplate).where(
             NotificationTemplate.category == category,
             NotificationTemplate.context == context,
-            NotificationTemplate.is_active == True,
+            NotificationTemplate.is_active,
         )
     )
     templates = result.scalars().all()

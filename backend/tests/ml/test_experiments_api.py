@@ -23,7 +23,6 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "fake-key-tests-dont-call-anthropic")
 
 from datetime import date, timedelta
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.database import Base

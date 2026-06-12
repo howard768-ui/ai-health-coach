@@ -7,7 +7,6 @@ Run: cd backend && uv run python -m pytest tests/test_api_contracts.py -v
 """
 
 import os
-import pytest
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 os.environ.setdefault("ENCRYPTION_KEY", "T0TXLkHFSeZRYGIIejSFVkhQrvRE-bWLkwXSkkdWiKQ=")
@@ -49,7 +48,6 @@ HEALTH_LATEST_FALLBACK_KEYS = {
 
 def test_health_latest_reconciled_shape():
     """Reconciled health data has all keys iOS expects."""
-    from app.services.health_data import SLEEP_METRIC_KEYS  # Verify it exists
 
     # Simulate what get_latest_health_data returns in the reconciled path
     sample = {
@@ -108,8 +106,6 @@ def test_coach_response_blocks_discriminator():
     discriminated union (text vs data_card). Without this, the polymorphic
     decoder has nothing to dispatch on."""
     from app.services.content_blocks import (
-        DataCardBlock,
-        TextBlock,
         parse_content_blocks,
     )
     blocks = parse_content_blocks(

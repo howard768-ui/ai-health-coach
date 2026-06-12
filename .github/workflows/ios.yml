@@ -29,6 +29,13 @@ on:
 
   workflow_dispatch:
 
+  # Nightly full validation at 4am ET: build + smoke + the backend-data E2E
+  # set (the maestro-backend job below only runs on non-PR events). Scheduled
+  # in idle hours so the ~80 macOS runner minutes do not deepen the daytime
+  # queue (CLAUDE.md convention 11).
+  schedule:
+    - cron: '0 8 * * *'
+
 # Cancel any in-flight run for the same workflow + ref, but only for PRs.
 # Saves runner minutes when a PR pushes new commits faster than CI completes.
 # On main, successive auto-merges share the same ref, so cancel-in-progress
@@ -451,6 +458,153 @@ jobs:
             auth-debug.txt
             diag-screen-after-bypass.png
             diag-hierarchy.json
+          if-no-files-found: ignore
+
+  maestro-backend:
+    name: Maestro E2E (backend)
+    # The six backend-data flows (maestro/flows/backend/) against a real
+    # seeded local backend. NOT run on PRs: these flows exercise live
+    # endpoints and add ~25 macOS runner minutes, which is the wrong thing
+    # to spend on every PR push (CLAUDE.md convention 11). Main pushes,
+    # the nightly schedule, and manual dispatch get the full signal.
+    #
+    # Backend contract (rehearsed end-to-end locally 2026-06-12):
+    # - The simulator app hardwires http://127.0.0.1:8000/api, so uvicorn
+    #   binds 127.0.0.1:8000 on the runner.
+    # - POST /auth/dev-login (development/test only) mints the token pair;
+    #   app/scripts/seed_e2e.py seeds 7 SleepRecord rows for the same fixed
+    #   user, which satisfies both /api/dashboard (Sleep Efficiency + HRV
+    #   Status cards, flow 13) and /api/trends (flow 14).
+    # - ANTHROPIC_API_KEY must be NON-EMPTY: an empty key raises TypeError
+    #   inside the anthropic SDK (not an APIError subclass), escapes the
+    #   route's except clause, and 500s /api/dashboard on every request. A
+    #   dummy value fails as AuthenticationError, which IS caught, giving
+    #   the deterministic fallback insight.
+    # - APP_ENV stays unset (development default): APP_ENV=test trips the
+    #   PUBLIC_BASE_URL config validator at import.
+    if: github.event_name != 'pull_request'
+    needs: build-and-test
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    env:
+      MAESTRO_DRIVER_STARTUP_TIMEOUT: "300000"
+      MAESTRO_CLI_NO_ANALYTICS: "1"
+      JWT_SECRET_KEY: "test-jwt-secret-must-be-long-enough-for-hs256-aaaaaaaa"
+      ENCRYPTION_KEY: "T0TXLkHFSeZRYGIIejSFVkhQrvRE-bWLkwXSkkdWiKQ="
+      ANTHROPIC_API_KEY: "ci-dummy-key"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Maestro
+        run: |
+          curl -Ls "https://get.maestro.mobile.dev" | MAESTRO_VERSION=2.6.1 bash
+          echo "$HOME/.maestro/bin" >> $GITHUB_PATH
+
+      - name: Download app from build-and-test
+        uses: actions/download-artifact@v8
+        with:
+          name: meld-app-sim
+          path: ${{ runner.temp }}/e2e-app
+
+      - name: Unpack app
+        run: |
+          ditto -x -k "$RUNNER_TEMP/e2e-app/Meld-app.zip" "$RUNNER_TEMP/e2e-app"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync
+
+      - name: Migrate, seed, and start backend
+        working-directory: backend
+        env:
+          DATABASE_URL: sqlite+aiosqlite:///${{ runner.temp }}/meld-e2e.db
+        run: |
+          uv run python -m alembic upgrade head
+          uv run python -m app.scripts.seed_e2e
+          # Background uvicorn survives across steps; nohup detaches it from
+          # this step's shell. /readyz greens only after alembic_version
+          # exists, which is why migration runs first.
+          nohup uv run python -m uvicorn app.main:app \
+            --host 127.0.0.1 --port 8000 \
+            > "$RUNNER_TEMP/uvicorn-e2e.log" 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8000/readyz >/dev/null; then
+              echo "Backend ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Backend never became ready"
+          tail -50 "$RUNNER_TEMP/uvicorn-e2e.log"
+          exit 1
+
+      - name: Boot Simulator
+        id: prewarm
+        run: |
+          DEVICE_ID=$(xcrun simctl list devices available \
+            | grep "iPhone 16 Pro (" \
+            | head -1 \
+            | grep -oE '[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}')
+          if [ -z "$DEVICE_ID" ]; then
+            echo "::error::Could not find iPhone 16 Pro simulator UDID"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          xcrun simctl boot "$DEVICE_ID" 2>/dev/null || true
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+          sleep 8
+          echo "device_id=$DEVICE_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Install app
+        run: |
+          APP_PATH="$RUNNER_TEMP/e2e-app/Meld.app"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Info.plist"
+          xcrun simctl install "${{ steps.prewarm.outputs.device_id }}" "$APP_PATH"
+
+      - name: Run Maestro flows (backend set)
+        timeout-minutes: 20
+        run: |
+          maestro test maestro/flows/backend/ \
+            --format junit \
+            --output maestro-results-backend.xml \
+            --debug-output maestro-debug/
+
+      - name: Dump backend log on failure
+        if: failure()
+        run: tail -100 "$RUNNER_TEMP/uvicorn-e2e.log" || true
+
+      - name: Bundle Maestro debug output
+        if: always()
+        run: |
+          if [ -d maestro-debug ]; then
+            tar -czf maestro-debug.tgz maestro-debug/
+          fi
+
+      - name: Upload Maestro backend results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: maestro-results-backend
+          path: maestro-results-backend.xml
+          if-no-files-found: error
+
+      - name: Upload Maestro backend debug
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: maestro-debug-backend
+          path: |
+            maestro-debug.tgz
+            ${{ runner.temp }}/uvicorn-e2e.log
           if-no-files-found: ignore
 
   swiftlint:

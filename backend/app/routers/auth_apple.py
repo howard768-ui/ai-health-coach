@@ -34,11 +34,11 @@ from app.core.apple import (
     verify_apple_server_notification,
 )
 from app.core.security import (
-    REFRESH_TOKEN_EXPIRE_DAYS,
     create_access_token,
     create_refresh_token,
     hash_refresh_token,
 )
+from app.config import settings
 from app.database import get_db
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
@@ -145,6 +145,47 @@ async def _revoke_chain(db: AsyncSession, start_hash: str) -> None:
             row.revoked_at = now
         current = row.replaced_by or ""
     await db.flush()
+
+
+# ── POST /auth/dev-login (development/test only) ─────────────────────────────
+
+# Fixed identity for UI-test runs. The iOS client fires POST /auth/dev-login
+# (no body) under -uitesting-skip-auth (MeldApp fire-and-forget; client side
+# shipped long before this route existed). The E2E seed script
+# (app/scripts/seed_e2e.py) MUST seed data for this same id; it imports the
+# constant from here.
+DEV_LOGIN_USER_ID = "000000.devlogin0000000000000000000000.0001"
+
+
+@router.post("/dev-login", response_model=TokenPair)
+async def dev_login(db: AsyncSession = Depends(get_db)) -> TokenPair:
+    """Mint a real token pair for the fixed dev user. CI/E2E only.
+
+    Gated on the same env tuple as encryption/secrets/ratelimit (is_prod
+    idiom): anything that is not explicitly development or test gets a 404,
+    so a misspelled APP_ENV fails closed and the route is invisible in
+    production. No request body: the shipped iOS client POSTs empty with no
+    Content-Type. No rate-limit decorator: the limiter is disabled in
+    development/test, and adding one would 429 the per-flow relaunches.
+    """
+    if settings.app_env.strip().lower() not in ("development", "test"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    result = await db.execute(
+        select(User).where(User.apple_user_id == DEV_LOGIN_USER_ID)
+    )
+    user = result.scalar_one_or_none()
+    if user is None:
+        user = User(
+            apple_user_id=DEV_LOGIN_USER_ID,
+            name="Dev",
+            is_active=True,
+            onboarding_complete=True,
+        )
+        db.add(user)
+        await db.flush()
+
+    return await _issue_token_pair(db, user, None)
 
 
 # ── POST /auth/apple ─────────────────────────────────────────────────────────

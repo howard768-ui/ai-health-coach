@@ -61,9 +61,13 @@ jobs:
         working-directory: evals
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        # Deliberately NO pipefail here: promptfoo exits non-zero on ANY
+        # failed eval, but this job's contract is the downstream "Quality
+        # gates" step (90% pass rate + zero safety/adversarial failures),
+        # which parses results.json and exits honestly. pipefail would
+        # replace that calibrated gate with an all-or-nothing one (it did,
+        # for one CI run, on the first push of this PR).
         run: |
-          # pipefail so the step exits with promptfoo's code, not tee's.
-          set -o pipefail
           npx promptfoo eval --no-cache -o results.json 2>&1 | tee eval-output.txt
 
       - name: Quality gates
@@ -149,8 +153,9 @@ jobs:
         working-directory: evals
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        # No pipefail: the "Data fidelity gate" step below is the honest
+        # arbiter (parses fidelity-results.json, fails on any failure).
         run: |
-          set -o pipefail
           npx promptfoo eval -c golden_data_fidelity.yaml --no-cache -o fidelity-results.json 2>&1 | tee fidelity-output.txt
 
       - name: Data fidelity gate

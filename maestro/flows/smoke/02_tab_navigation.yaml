@@ -1,7 +1,7 @@
 appId: com.heymeld.app
 name: "Tab Navigation: each tab loads correct screen"
 ---
-- runFlow: ../helpers/auth_bypass.yaml
+- runFlow: ../../helpers/auth_bypass.yaml
 
 # Today (Home) tab is the default landing screen
 - assertVisible:

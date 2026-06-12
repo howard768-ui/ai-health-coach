@@ -1,7 +1,7 @@
 appId: com.heymeld.app
 name: "Smoke Test — App launches and tabs visible"
 ---
-- runFlow: ../helpers/auth_bypass.yaml
+- runFlow: ../../helpers/auth_bypass.yaml
 
 # Verify all 5 tab buttons are present
 - assertVisible:

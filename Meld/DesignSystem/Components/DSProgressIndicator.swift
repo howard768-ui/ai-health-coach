@@ -95,7 +95,11 @@ struct DSCircularProgress: View {
                         .linear(duration: 1.0).repeatForever(autoreverses: false),
                         value: isAnimating
                     )
-                    .onAppear { isAnimating = true }
+                    // UITestMode: keep the spinner static so XCUITest
+                    // snapshots can reach quiescence (see UITestMode).
+                    .onAppear {
+                        if !UITestMode.isActive { isAnimating = true }
+                    }
             }
         }
         .frame(width: size, height: size)

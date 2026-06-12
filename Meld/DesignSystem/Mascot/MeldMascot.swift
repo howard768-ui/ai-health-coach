@@ -84,7 +84,9 @@ struct MeldMascot: View {
     }
 
     private func startAnimation() {
-        guard !reduceMotion else { return }
+        // UITestMode: the idle/thinking repeatForever animations prevent
+        // XCUITest quiescence and stall every Maestro snapshot (see UITestMode).
+        guard !reduceMotion, !UITestMode.isActive else { return }
         // Reset phase synchronously so SwiftUI paints the starting state.
         phase = false
         let animation: Animation = switch state {

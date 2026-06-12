@@ -58,7 +58,9 @@ struct DashboardSkeleton: View {
         }
         .padding(.horizontal, M)
         .padding(.top, DSSpacing.md)
-        .shimmering(active: true)
+        // UITestMode: shimmer is a perpetual animation; it prevents XCUITest
+        // quiescence and stalls Maestro snapshots (see UITestMode).
+        .shimmering(active: !UITestMode.isActive)
     }
 
     private var metricCardSkeleton: some View {
@@ -96,7 +98,7 @@ struct ChatMessageSkeleton: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: isCoach ? .leading : .trailing)
-        .shimmering()
+        .shimmering(active: !UITestMode.isActive)
     }
 }
 
@@ -128,7 +130,11 @@ struct TypingIndicator: View {
             .background(DSColor.Surface.secondary)
             .dsCornerRadius(DSRadius.lg)
         }
-        .onAppear { dotIndex = 2 }
+        // UITestMode: the dot bounce is repeatForever; leave the dots static
+        // under UI automation (see UITestMode).
+        .onAppear {
+            if !UITestMode.isActive { dotIndex = 2 }
+        }
     }
 }
 

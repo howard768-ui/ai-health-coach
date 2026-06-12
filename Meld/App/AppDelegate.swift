@@ -33,6 +33,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate, @preconcurrency UNUser
         registerNotificationCategories()
         registerBackgroundTasks()
 
+        if Self.isRunningUnderTestHarness {
+            // Disable UIKit-level animations under test harnesses. SwiftUI
+            // repeatForever call sites are gated individually via UITestMode;
+            // this covers UIKit-backed transitions (alerts, sheet presents)
+            // so XCUITest's quiescence wait settles quickly between steps.
+            UIView.setAnimationsEnabled(false)
+        }
+
         if !Self.isRunningUnderTestHarness {
             // Always re-register for remote notifications on launch
             // (token may have changed, or permission was granted in a previous install)

@@ -1,0 +1,91 @@
+name: Weekly Audit
+
+# Continuous-audit follow-up from the 2026-06-05 audit retrospective: 59
+# findings piled up in the eight weeks between big-bang audits, then took a
+# 16-PR remediation burst to burn down. This workflow reviews ONE WEEK of
+# merged changes every Monday so findings get caught at PR size.
+#
+# Scope per run: the diff merged to main in the last 7 days, reviewed across
+# the four dimensions the June audit proved productive: security, PHI
+# handling, ML correctness, and CI honesty. Confirmed findings land in a
+# single GitHub issue; a clean week files nothing.
+#
+# Honesty rules (CLAUDE.md convention 9):
+# - A missing ANTHROPIC_API_KEY FAILS this workflow. It does not green-skip;
+#   a silently skipped audit reads as a clean week.
+# - An empty week (no merges) is an explicit SKIPPED notice, not a synthetic
+#   pass.
+
+on:
+  schedule:
+    # Mondays 13:00 UTC (9am ET)
+    - cron: '0 13 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  # claude-code-action requires OIDC for GitHub identity; without
+  # id-token: write the action fails at setupGitHubToken.
+  id-token: write
+
+jobs:
+  audit:
+    name: Audit last week's merged diff
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Require API key (hard fail, no green skip)
+        run: |
+          if [ -z "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+            echo "::error::ANTHROPIC_API_KEY is missing. The weekly audit cannot run; failing loudly instead of green-skipping."
+            exit 1
+          fi
+
+      - name: Measure the week's merge activity
+        id: week
+        run: |
+          COMMITS=$(git log --first-parent --since="7 days ago" --oneline origin/main | wc -l)
+          echo "commit_count=$COMMITS" >> "$GITHUB_OUTPUT"
+          echo "Merged commits in the last 7 days: $COMMITS"
+          if [ "$COMMITS" -eq 0 ]; then
+            echo "::notice::No merges to main in the last 7 days; audit skipped explicitly."
+          fi
+
+      - name: Run audit
+        if: steps.week.outputs.commit_count != '0'
+        uses: anthropics/claude-code-action@v1
+        timeout-minutes: 25
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are the weekly incremental auditor for this repo (Meld: iOS
+            health coach app, FastAPI backend, ML signal engine, Astro site).
+
+            Scope: ONLY changes merged to main in the last 7 days.
+            1. List them: `git log --first-parent --since="7 days ago" --stat origin/main`
+            2. Get the full diff: `git diff $(git rev-list --first-parent --since="7 days ago" origin/main | tail -1)^..origin/main` (fall back to per-commit `git show` if the range is awkward).
+
+            Review the changed code across exactly four dimensions:
+            - Security: authn/authz gaps, injection, secrets in code, unsafe deserialization, SSRF.
+            - PHI handling: PHI in logs, caching of PHI responses, missing encryption on new PHI columns, PHI leaving the trust boundary (third-party APIs, analytics).
+            - ML correctness: train/serve skew, data leakage across users or time, silent shape/unit mismatches, threshold changes without justification.
+            - CI honesty: new suppressors (`|| true`, `continue-on-error`, `| tee` without pipefail, green-on-missing-artifact), checks renamed away from what they do.
+
+            Rules:
+            - VERIFY every candidate finding by reading the actual file at the cited line before reporting it. Drop anything you cannot confirm.
+            - Severity: critical / high / medium / low. No style nits; ruff and SwiftLint own style.
+            - Do not modify any files. Read-only plus `gh issue create`.
+
+            Output:
+            - If you confirmed at least one finding: create ONE GitHub issue via `gh issue create` titled "Weekly audit <today's date>: <N> findings" whose body lists each finding as: severity, file:line, what it is, why it matters, suggested fix. If a label named "audit" exists, apply it; if not, create the issue without a label.
+            - If the week is clean: do NOT create an issue. Print the single line "WEEKLY AUDIT CLEAN" instead.
+          claude_args: |
+            --model claude-sonnet-4-5
+            --max-turns 40
+            --allowed-tools "Read,Glob,Grep,Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git rev-list:*),Bash(gh issue create:*),Bash(gh label list:*)"

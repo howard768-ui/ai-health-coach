@@ -97,7 +97,8 @@ struct AnimatedMascot: View {
     // MARK: - Animation Trigger
 
     private func startAnimation() {
-        guard !reduceMotion else { return }
+        // UITestMode: repeatForever prevents XCUITest quiescence (see UITestMode).
+        guard !reduceMotion, !UITestMode.isActive else { return }
 
         phase = false
 

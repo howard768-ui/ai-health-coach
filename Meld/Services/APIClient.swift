@@ -75,6 +75,18 @@ actor APIClient {
         // with the backend's Cache-Control: no-store (defense-in-depth).
         config.urlCache = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        #if DEBUG
+        if UITestMode.isActive {
+            // UI-test runs (Maestro on CI) have no backend at 127.0.0.1:8000,
+            // so every request is doomed. At the 45s default each one hangs
+            // for the full timeout, stalling flows and producing 3-4x
+            // flow-time variance. Fail fast; the error states the app shows
+            // are exactly what the flows assert against.
+            config.timeoutIntervalForRequest = 5
+            config.timeoutIntervalForResource = 10
+            config.waitsForConnectivity = false
+        }
+        #endif
         self.session = URLSession(configuration: config)
     }
 

@@ -31,6 +31,19 @@ permissions:
   # does fire.
   actions: write
 
+# Collapse the redundant re-fires. The workflow_run trigger fires this
+# classifier on completion of EACH of "iOS CI", "Backend CI", and "Claude Code
+# Review", and each run would otherwise sit in the full 30-minute Tier 0 poll
+# (~3x wasted ubuntu-runner minutes per iOS PR). Group by the PR's head branch
+# (the one key consistent across pull_request and workflow_run events) and
+# cancel in-progress, so only the latest re-attempt polls. It sees the most
+# complete check state, and the Tier 0 merge is idempotent (handles a PR a
+# cancelled run already merged), so collapsing is safe. The fallback to
+# github.run_id keeps unrelated runs (no branch in context) from grouping.
+concurrency:
+  group: hitl-classify-${{ github.event.pull_request.head.ref || github.event.workflow_run.head_branch || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   classify:
     name: Classify PR tier
@@ -279,8 +292,9 @@ jobs:
               # the merge commit's push event fires normally (no fan-out
               # needed). When that secret exists, drop this whole block.
               echo "Checking whether to fan out TestFlight Release."
-              CHANGED=$(gh pr view "$PR_NUM" --json files --jq '.files[].path')
-              if echo "$CHANGED" | grep -qE '^(Meld/|Meld\.xcodeproj/|MeldNotificationServiceExtension/|project\.yml$|\.github/workflows/testflight\.yml$)'; then
+              # Reuse the file list captured for the iOS-gate decision above,
+              # rather than a second identical `gh pr view` API call.
+              if echo "$CHANGED_FILES" | grep -qE '^(Meld/|Meld\.xcodeproj/|MeldNotificationServiceExtension/|project\.yml$|\.github/workflows/testflight\.yml$)'; then
                 echo "iOS sources touched — dispatching TestFlight Release."
                 gh workflow run "TestFlight Release" --ref main \
                   || echo "WARN: failed to dispatch TestFlight Release; check manually."

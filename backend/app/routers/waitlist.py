@@ -18,6 +18,7 @@ import logging
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.ratelimit import limiter
@@ -144,10 +145,23 @@ async def subscribe(
     db.add(signup)
     try:
         await db.commit()
+    except IntegrityError:
+        # A concurrent first-time submission of the same email won the race
+        # (the unique index on email rejects this INSERT). Treat as success:
+        # the address is on the list, the winner fired its own admin alert.
+        await db.rollback()
+        logger.info(
+            "waitlist insert race resolved as duplicate email=%s***",
+            normalized_email[:3],
+        )
+        return WaitlistSubscribeResponse(
+            status="ok",
+            message="You're already on the list. We'll be in touch.",
+            new=False,
+        )
     except Exception as exc:
         await db.rollback()
-        # If a race created the row between our SELECT and INSERT, treat as success.
-        logger.warning("waitlist insert race or error: %s", exc)
+        logger.warning("waitlist insert error: %s", exc)
         raise HTTPException(
             status_code=500, detail="Could not save your email. Please try again."
         ) from exc

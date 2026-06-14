@@ -4,7 +4,16 @@
     "backend/app/core/encryption.py",
     ".env",
     "*.p8",
-    "*.pem"
+    "*.pem",
+    ".github/workflows/code-review.yml",
+    ".github/workflows/hitl-classifier.yml",
+    ".github/workflows/migration-health.yml",
+    ".github/workflows/ios-structural-checks.yml",
+    ".github/workflows/dependabot-automerge.yml",
+    ".github/workflows/auto-fix-dryrun.yml",
+    ".github/workflows/auto-fix-impl.yml",
+    ".github/hitl-config.json",
+    ".github/scripts/hitl_classify.py"
   ],
   "tier3_refuse_content_match": [
     "EVIDENCE_BOUND_SYSTEM_PROMPT",

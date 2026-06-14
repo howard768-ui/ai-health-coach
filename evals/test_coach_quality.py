@@ -105,8 +105,11 @@ def test_reading_level(case):
     # Compare at the 1-decimal precision we report. A raw grade like 9.04
     # prints as "9.0" but fails a strict `<= 9.0`, yielding the nonsensical
     # "Reading level 9.0 exceeds max 9.0". Rounding to the reported precision
-    # makes the ceiling inclusive at its stated resolution without lowering
-    # the bar (9.05 still rounds to 9.1 and fails).
+    # makes the ceiling inclusive at its stated resolution. (Exact half-way
+    # grades like x.x5 follow Python's round-half-to-even and IEEE-754 reprs,
+    # so they are not guaranteed to round up; but FK grade is continuous, an
+    # exact tie is vanishingly unlikely, and this only aligns the comparison
+    # with the displayed value rather than moving the bar.)
     grade = round(textstat.flesch_kincaid_grade(response), 1)
     assert grade <= case["max_grade"], (
         f"Reading level {grade:.1f} exceeds max {case['max_grade']} "
@@ -225,19 +228,27 @@ def test_no_fabricated_metrics():
     """Response should only reference numbers from the provided health data."""
     health_data = "sleep_efficiency: 77%, resting_hr: 57 bpm, hrv_average: 38 ms, readiness_score: 65, steps: 4201"
     allowed_numbers = {"77", "57", "38", "65", "4201", "4,201"}
-    # Common health benchmarks the coach may cite as goals/context (not fabricated data)
+    # Non-step health benchmarks the coach may cite as goals/context (not
+    # fabricated data). These are not round step counts, so the step-goal rule
+    # below cannot cover them; keep them explicit.
     health_benchmarks = {
-        # Step-goal thresholds the evidence-bound prompt explicitly tells the
-        # coach to offer as targets (rule 5: "give specific examples"). These
-        # are recommendations, not the user's measured data, so citing one is
-        # not a fabrication. 6,000 was the gap that flagged issue #197; 5,000
-        # (sedentary baseline) and 12,000 (active target) round out the tiers.
-        "5000", "5,000", "6000", "6,000", "7000", "7,000",
-        "8000", "8,000", "10000", "10,000", "12000", "12,000",
         "150", "300",  # weekly exercise minutes (WHO guidelines)
         "120", "130", "140",  # blood pressure thresholds
         "200", "250", "500", "2000",  # calorie targets
     }
+
+    def _is_round_step_goal(normalized: str) -> bool:
+        # Step-goal recommendations the evidence-bound prompt is told to give
+        # (rule 5: "give specific examples") are round values in a plausible
+        # daily range. Accept any of them programmatically instead of
+        # enumerating each tier: issue #197 flagged 6,000, and the next
+        # reasonable target (9,000 / 11,000 / 15,000 / ...) would otherwise
+        # false-positive the same way (denylist-by-omission whack-a-mole).
+        try:
+            n = int(normalized.split(".")[0])
+        except ValueError:
+            return False
+        return 1000 <= n <= 20000 and n % 500 == 0
 
     response = get_coach_response(
         "Brock", health_data, "Lose weight, Build muscle",
@@ -254,7 +265,7 @@ def test_no_fabricated_metrics():
         is_benchmark = normalized in health_benchmarks or num in health_benchmarks
         # Allow reasonable derived values (e.g., percentages, time estimates)
         is_reasonable = int(normalized.split(".")[0]) <= 100
-        assert is_allowed or is_benchmark or is_reasonable, (
+        assert is_allowed or is_benchmark or is_reasonable or _is_round_step_goal(normalized), (
             f"Response contains number '{num}' that is not in the health data or known benchmarks.\n"
             f"Allowed: {allowed_numbers}\nResponse:\n{response[:300]}"
         )

@@ -1,0 +1,46 @@
+name: Collect crash reports
+description: >
+  Collect iOS Simulator crash reports (.ips/.crash) from the host and device
+  DiagnosticReports directories, print the newest Meld report inline so the log
+  carries a trace even if the artifact is missed, and upload the set as an
+  artifact. Diagnostics for the issue #199 launch crash. Gate the calling step
+  with `if: failure()`.
+
+inputs:
+  artifact-name:
+    description: Name for the uploaded crash-reports artifact.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Collect crash reports (issue #199)
+      shell: bash
+      run: |
+        set +e
+        DEST="crash-reports"
+        mkdir -p "$DEST"
+        echo "=== Host DiagnosticReports (simulator apps report here) ==="
+        find "$HOME/Library/Logs/DiagnosticReports" -type f \
+          \( -iname 'Meld*' -o -iname '*.ips' -o -iname '*.crash' \) \
+          2>/dev/null -print -exec cp {} "$DEST/" \;
+        echo "=== Simulator-container DiagnosticReports ==="
+        find "$HOME/Library/Developer/CoreSimulator/Devices" \
+          -path '*/data/Library/Logs/DiagnosticReports/*' -type f \
+          2>/dev/null -print -exec cp {} "$DEST/" \;
+        echo "=== Collected ==="
+        ls -la "$DEST" 2>/dev/null
+        LATEST=$(ls -t "$DEST"/Meld* 2>/dev/null | head -1)
+        if [ -n "$LATEST" ]; then
+          echo "=== Newest Meld crash report: $LATEST (first 150 lines) ==="
+          head -150 "$LATEST"
+        else
+          echo "::warning::No Meld crash report found in DiagnosticReports (#199)."
+        fi
+
+    - name: Upload crash reports
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: crash-reports/
+        if-no-files-found: ignore

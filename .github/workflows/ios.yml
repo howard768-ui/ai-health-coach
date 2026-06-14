@@ -418,6 +418,45 @@ jobs:
           echo "=== Head of hierarchy (first 100 lines) ==="
           head -100 diag-hierarchy.json
 
+      - name: Collect crash reports (issue #199)
+        # The intermittent crash-at-launch (#199) strikes random flows within
+        # seconds of launchApp but never left a collected stack trace.
+        # Simulator app crashes write .ips reports to the host
+        # ~/Library/Logs/DiagnosticReports, and sometimes into the device's
+        # own data container. Gather both, print the newest Meld report inline
+        # so the log carries a trace even if the artifact is missed, and stage
+        # the rest for upload.
+        if: failure()
+        run: |
+          set +e
+          DEST="crash-reports"
+          mkdir -p "$DEST"
+          echo "=== Host DiagnosticReports (simulator apps report here) ==="
+          find "$HOME/Library/Logs/DiagnosticReports" -type f \
+            \( -iname 'Meld*' -o -iname '*.ips' -o -iname '*.crash' \) \
+            2>/dev/null -print -exec cp {} "$DEST/" \;
+          echo "=== Simulator-container DiagnosticReports ==="
+          find "$HOME/Library/Developer/CoreSimulator/Devices" \
+            -path '*/data/Library/Logs/DiagnosticReports/*' -type f \
+            2>/dev/null -print -exec cp {} "$DEST/" \;
+          echo "=== Collected ==="
+          ls -la "$DEST" 2>/dev/null
+          LATEST=$(ls -t "$DEST"/Meld* 2>/dev/null | head -1)
+          if [ -n "$LATEST" ]; then
+            echo "=== Newest Meld crash report: $LATEST (first 150 lines) ==="
+            head -150 "$LATEST"
+          else
+            echo "::warning::No Meld crash report found in DiagnosticReports. The crash may not have written an .ips on this runner, or the process name differs (#199)."
+          fi
+
+      - name: Upload crash reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: maestro-crash-reports
+          path: crash-reports/
+          if-no-files-found: ignore
+
       - name: Upload Maestro results
         if: always()
         uses: actions/upload-artifact@v7
@@ -581,6 +620,40 @@ jobs:
       - name: Dump backend log on failure
         if: failure()
         run: tail -100 "$RUNNER_TEMP/uvicorn-e2e.log" || true
+
+      - name: Collect crash reports (issue #199)
+        # Same crash-at-launch class as the smoke job; collect simulator app
+        # crash reports so a backend-flow launch crash leaves a real trace.
+        if: failure()
+        run: |
+          set +e
+          DEST="crash-reports"
+          mkdir -p "$DEST"
+          echo "=== Host DiagnosticReports (simulator apps report here) ==="
+          find "$HOME/Library/Logs/DiagnosticReports" -type f \
+            \( -iname 'Meld*' -o -iname '*.ips' -o -iname '*.crash' \) \
+            2>/dev/null -print -exec cp {} "$DEST/" \;
+          echo "=== Simulator-container DiagnosticReports ==="
+          find "$HOME/Library/Developer/CoreSimulator/Devices" \
+            -path '*/data/Library/Logs/DiagnosticReports/*' -type f \
+            2>/dev/null -print -exec cp {} "$DEST/" \;
+          echo "=== Collected ==="
+          ls -la "$DEST" 2>/dev/null
+          LATEST=$(ls -t "$DEST"/Meld* 2>/dev/null | head -1)
+          if [ -n "$LATEST" ]; then
+            echo "=== Newest Meld crash report: $LATEST (first 150 lines) ==="
+            head -150 "$LATEST"
+          else
+            echo "::warning::No Meld crash report found in DiagnosticReports (#199)."
+          fi
+
+      - name: Upload crash reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: maestro-crash-reports-backend
+          path: crash-reports/
+          if-no-files-found: ignore
 
       - name: Bundle Maestro debug output
         if: always()

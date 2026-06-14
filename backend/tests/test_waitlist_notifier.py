@@ -98,6 +98,27 @@ def test_render_handles_no_attribution():
     assert "direct" in html  # referer fallback
 
 
+def test_render_escapes_user_controlled_html():
+    # Referer (from the Referer header) and utm_* (from the request body) are
+    # attacker-controllable; they must be HTML-escaped before going into the
+    # admin alert email body, or it is stored HTML injection into the inbox.
+    signup = WaitlistSignup(
+        email="eve@example.com",
+        utm_source='<a href="https://evil">click</a>',
+        referer="<img src=x onerror=alert(1)>",
+    )
+    signup.created_at = datetime(2026, 5, 14, 14, 32)
+
+    _subject, html = _render(signup)
+
+    # Raw markup must not survive; escaped entities must be present.
+    assert "<a href=" not in html
+    assert "<img src=x" not in html
+    assert "onerror=alert(1)" in html  # text preserved, but inert (escaped)
+    assert "&lt;a href=" in html
+    assert "&lt;img src=x" in html
+
+
 # ── send_new_signup_alert ─────────────────────────────────────────────
 
 

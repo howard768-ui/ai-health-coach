@@ -14,10 +14,21 @@ Operational contract:
 
 Privacy: this routes the signer's email through Resend. Resend is listed
 as a sub-processor in privacy.astro section 5.
+
+NOTE (2026-06): the live heymeld.com waitlist posts to a same-origin
+Cloudflare Pages Function (`website/functions/api/waitlist/subscribe.ts`)
+backed by Cloudflare D1, NOT this FastAPI endpoint (see
+`website/.env.example`). So in production this notifier does not fire on
+real signups; the backend route remains reachable and tested but unused by
+the site. `notified` is reused here as the admin-alert idempotency flag,
+which collides with its model meaning ("launch email sent"); if this path is
+revived or a launch-email sender is built, give the admin alert its own
+column instead of overloading `notified`.
 """
 
 import asyncio
 import logging
+from html import escape as _esc
 
 import resend
 
@@ -29,25 +40,30 @@ logger = logging.getLogger("meld.waitlist.notifier")
 
 
 def _render(signup: WaitlistSignup) -> tuple[str, str]:
+    # Every field below is attacker-controllable (utm_* and source from the
+    # request body, referer from the Referer header, email is EmailStr-
+    # validated but escaped anyway). HTML-escape before interpolating into the
+    # email body, or a crafted Referer/utm_source injects markup into the
+    # admin's inbox (stored HTML injection).
     bits: list[str] = []
     if signup.utm_source:
-        bits.append(f"utm_source={signup.utm_source}")
+        bits.append(f"utm_source={_esc(signup.utm_source)}")
     if signup.utm_medium:
-        bits.append(f"utm_medium={signup.utm_medium}")
+        bits.append(f"utm_medium={_esc(signup.utm_medium)}")
     if signup.utm_campaign:
-        bits.append(f"utm_campaign={signup.utm_campaign}")
+        bits.append(f"utm_campaign={_esc(signup.utm_campaign)}")
     if signup.source:
-        bits.append(f"source={signup.source}")
+        bits.append(f"source={_esc(signup.source)}")
     attribution = ", ".join(bits) or "direct (no attribution)"
 
     subject = f"New Meld signup: {signup.email}"
-    html = (
+    body = (
         f"<p>New waitlist signup at {signup.created_at:%Y-%m-%d %H:%M UTC}.</p>"
-        f"<p><strong>Email:</strong> {signup.email}</p>"
+        f"<p><strong>Email:</strong> {_esc(signup.email)}</p>"
         f"<p><strong>Attribution:</strong> {attribution}</p>"
-        f"<p><strong>Referer:</strong> {signup.referer or 'direct'}</p>"
+        f"<p><strong>Referer:</strong> {_esc(signup.referer) if signup.referer else 'direct'}</p>"
     )
-    return subject, html
+    return subject, body
 
 
 async def send_new_signup_alert(signup_id: int) -> bool:

@@ -3,6 +3,17 @@ name: HITL Classifier
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  # Tier 3 change, Brock-approved 2026-06-12 (vault: "Tier 3 Proposal -
+  # Auto-merge Event Trigger and Review Gate"). The 30-minute poll below
+  # cannot outlast iOS CI (~35 min when unqueued; macOS queueing observed
+  # 1h15m to 18.5h), so every green iOS PR used to time out and need a
+  # manual merge. Completed CI now re-fires the classifier, which finds all
+  # checks already done and resolves in one poll iteration. Classification
+  # semantics, kill switch, REQUIRED list, and merge mechanics are
+  # unchanged; only the trigger and PR-context resolution are new.
+  workflow_run:
+    workflows: ["iOS CI", "Backend CI", "Claude Code Review"]
+    types: [completed]
 
 permissions:
   # `contents: write` is needed for `gh pr merge --merge` on the Tier 0
@@ -16,10 +27,19 @@ jobs:
   classify:
     name: Classify PR tier
     runs-on: ubuntu-latest
-    # Skip dependabot (handled by dependabot-automerge.yml) and fork PRs (safety).
+    # Skip dependabot (handled by dependabot-automerge.yml) and fork PRs
+    # (safety). github.event.pull_request is absent on workflow_run events,
+    # so the condition branches by event type; the workflow_run arm only
+    # re-attempts after SUCCESSFUL workflow completions (a failed workflow
+    # would just make the poll abort anyway).
     if: >
-      github.event.pull_request.user.login != 'dependabot[bot]' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.user.login != 'dependabot[bot]' &&
+       github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.actor.login != 'dependabot[bot]' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
 
     steps:
       - name: Kill switch check
@@ -34,18 +54,61 @@ jobs:
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Checkout
+      - name: Resolve PR context
+        # On pull_request events this is a passthrough. On workflow_run
+        # events the payload has no PR object, so resolve it: head SHA from
+        # the completed run, then the PR via the commits-to-pulls API. Only
+        # OPEN PRs proceed; a main-push completion resolves to the already
+        # merged (closed) PR and exits here, as does any run whose branch
+        # has no PR.
         if: steps.killswitch.outputs.enabled == 'true'
+        id: ctx
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            echo "pr_num=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+            echo "head_sha=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+            echo "base_sha=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          HEAD_SHA="${{ github.event.workflow_run.head_sha }}"
+          PR_JSON=$(gh api "/repos/${REPO}/commits/${HEAD_SHA}/pulls" \
+            --jq '[.[] | select(.state == "open")][0] // empty')
+          if [ -z "$PR_JSON" ]; then
+            echo "No open PR for ${HEAD_SHA} (main push or closed PR); nothing to re-attempt."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
+          BASE_SHA=$(echo "$PR_JSON" | jq -r '.base.sha')
+          PR_AUTHOR=$(echo "$PR_JSON" | jq -r '.user.login')
+          if [ "$PR_AUTHOR" = "dependabot[bot]" ]; then
+            echo "PR #${PR_NUM} is dependabot's; dependabot-automerge.yml owns it."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Re-attempt for PR #${PR_NUM} at ${HEAD_SHA} (triggered by completed '${{ github.event.workflow_run.name }}')."
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+          echo "pr_num=${PR_NUM}" >> "$GITHUB_OUTPUT"
+          echo "head_sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+          echo "base_sha=${BASE_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        if: steps.killswitch.outputs.enabled == 'true' && steps.ctx.outputs.proceed == 'true'
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Compute diff file list
-        if: steps.killswitch.outputs.enabled == 'true'
+        if: steps.killswitch.outputs.enabled == 'true' && steps.ctx.outputs.proceed == 'true'
         id: files
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUM: ${{ github.event.pull_request.number }}
+          PR_NUM: ${{ steps.ctx.outputs.pr_num }}
           REPO: ${{ github.repository }}
         run: |
           gh api --paginate "/repos/${REPO}/pulls/${PR_NUM}/files" --jq '.[].filename' > changed_files.txt
@@ -53,18 +116,21 @@ jobs:
           cat changed_files.txt
 
       - name: Classify changes
-        if: steps.killswitch.outputs.enabled == 'true'
+        if: steps.killswitch.outputs.enabled == 'true' && steps.ctx.outputs.proceed == 'true'
         id: classify
         run: python3 .github/scripts/hitl_classify.py
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ steps.ctx.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.ctx.outputs.head_sha }}
 
       - name: Tier 3, block and close
-        if: steps.killswitch.outputs.enabled == 'true' && steps.classify.outputs.tier == 'tier3'
+        # pull_request events only: a workflow_run re-attempt on a Tier 3 PR
+        # must not re-comment or re-close; the original pull_request run
+        # already did.
+        if: github.event_name == 'pull_request' && steps.killswitch.outputs.enabled == 'true' && steps.classify.outputs.tier == 'tier3'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUM: ${{ github.event.pull_request.number }}
+          PR_NUM: ${{ steps.ctx.outputs.pr_num }}
           REASONS: ${{ steps.classify.outputs.reasons }}
           MATCHED: ${{ steps.classify.outputs.matched_files }}
         run: |
@@ -73,10 +139,12 @@ jobs:
           gh pr close "$PR_NUM"
 
       - name: Tier 2, label + comment (soft signal to Brock)
-        if: steps.killswitch.outputs.enabled == 'true' && steps.classify.outputs.tier == 'tier2'
+        # pull_request events only: workflow_run re-attempts would duplicate
+        # the label-and-comment on every completed CI workflow (3+ per PR).
+        if: github.event_name == 'pull_request' && steps.killswitch.outputs.enabled == 'true' && steps.classify.outputs.tier == 'tier2'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUM: ${{ github.event.pull_request.number }}
+          PR_NUM: ${{ steps.ctx.outputs.pr_num }}
           REASONS: ${{ steps.classify.outputs.reasons }}
           MATCHED: ${{ steps.classify.outputs.matched_files }}
         run: |
@@ -90,11 +158,14 @@ jobs:
           gh pr comment "$PR_NUM" --body "$BODY"
 
       - name: Tier 0, wait for required checks, then auto-merge
-        if: steps.killswitch.outputs.enabled == 'true' && steps.classify.outputs.tier == 'tier0'
+        # Runs on BOTH event types: this is the step the workflow_run
+        # re-attempt exists for. On a re-attempt all required checks are
+        # typically already complete, so the poll resolves in one iteration.
+        if: steps.killswitch.outputs.enabled == 'true' && steps.ctx.outputs.proceed == 'true' && steps.classify.outputs.tier == 'tier0'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUM: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUM: ${{ steps.ctx.outputs.pr_num }}
+          HEAD_SHA: ${{ steps.ctx.outputs.head_sha }}
           REPO: ${{ github.repository }}
         run: |
           echo "Classified as Tier 0 engineering. Waiting for Claude PR Review and Backend CI checks to succeed."
@@ -162,7 +233,19 @@ jobs:
               # does not have scope for by default. Since we just polled
               # for all required checks to be SUCCESS, we can merge directly.
               echo "All required checks green; merging directly."
-              gh pr merge "$PR_NUM" --merge
+              # Idempotent merge: with the workflow_run re-attempt trigger,
+              # two classifier runs can legitimately race to this line (the
+              # original poll catching green at the same moment as a
+              # re-attempt). Losing the race is success, not failure.
+              if ! gh pr merge "$PR_NUM" --merge; then
+                STATE=$(gh pr view "$PR_NUM" --json state --jq .state)
+                if [ "$STATE" = "MERGED" ]; then
+                  echo "PR already merged by a concurrent classifier run."
+                  exit 0
+                fi
+                echo "Merge failed and PR state is ${STATE}."
+                exit 1
+              fi
 
               # Post-merge fan-out for push-triggered workflows.
               #
@@ -197,4 +280,5 @@ jobs:
             sleep 30
           done
 
-          echo "Timed out waiting for required checks after 30 minutes. Leaving PR for manual review."
+          echo "Timed out waiting for required checks after 30 minutes."
+          echo "Benign with the workflow_run trigger: when the slow workflow (usually iOS CI) completes, its completion event re-fires this classifier and the re-attempt merges in one poll iteration."

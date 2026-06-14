@@ -38,8 +38,19 @@ final class NotificationService {
     /// the non-Sendable `UNNotificationSettings` never crosses an actor
     /// boundary. The async variant `notificationSettings()` returns
     /// `UNNotificationSettings` across a nonisolated context, which Swift 6
-    /// rejects. See feedback_swift6_delegates.md for the general pattern.
-    func getPermissionStatus() async -> UNAuthorizationStatus {
+    /// rejects.
+    ///
+    /// `nonisolated` is load-bearing (issue #199). On the `@MainActor` class
+    /// the completion closure inherited MainActor isolation, but UN invokes
+    /// it on its own background XPC queue
+    /// (`UNUserNotificationServiceConnection.call-out`). The runtime's
+    /// `isCurrentExecutor` check then tripped `dispatch_assert_queue` and
+    /// crashed with EXC_BREAKPOINT at launch (~10-30% of cold launches,
+    /// confirmed by a captured DiagnosticReports trace). Marking the method
+    /// `nonisolated` keeps the closure off MainActor, so no executor
+    /// assertion is inserted. The body touches no isolated state, and
+    /// `authorizationStatus` is Sendable, so this is safe.
+    nonisolated func getPermissionStatus() async -> UNAuthorizationStatus {
         await withCheckedContinuation { continuation in
             UNUserNotificationCenter.current().getNotificationSettings { settings in
                 continuation.resume(returning: settings.authorizationStatus)

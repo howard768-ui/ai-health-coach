@@ -29,15 +29,19 @@ jobs:
     runs-on: ubuntu-latest
     # Skip dependabot (handled by dependabot-automerge.yml) and fork PRs
     # (safety). github.event.pull_request is absent on workflow_run events,
-    # so the condition branches by event type; the workflow_run arm only
-    # re-attempts after SUCCESSFUL workflow completions (a failed workflow
-    # would just make the poll abort anyway).
+    # so the condition branches by event type. The workflow_run arm fires on
+    # ANY completion, not just success (#200 follow-up): "iOS CI" concludes
+    # failure whenever the non-required Maestro job flakes (#199) even with
+    # every REQUIRED check green, and gating the re-attempt on success left
+    # those PRs unmerged (observed on #204). The required-checks poll below
+    # is the real arbiter: it merges only when every REQUIRED check is green
+    # and aborts otherwise, so re-attempting on a failed workflow is safe and
+    # just exits cheaply when a required check actually failed.
     if: >
       (github.event_name == 'pull_request' &&
        github.event.pull_request.user.login != 'dependabot[bot]' &&
        github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.actor.login != 'dependabot[bot]' &&
        github.event.workflow_run.head_repository.full_name == github.repository)
 

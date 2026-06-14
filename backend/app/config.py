@@ -91,6 +91,14 @@ class Settings(BaseSettings):
     # apple_user_id via Railway env. Adding/removing requires a redeploy.
     admin_user_ids: str = ""
 
+    # Resend — transactional email for new-signup admin alerts on the waitlist.
+    # Empty API key disables sending (alerts are silently skipped + logged).
+    # Production: set RESEND_API_KEY via Railway. The sender domain on
+    # `resend_from` must be verified in Resend before any send succeeds.
+    resend_api_key: str = ""
+    resend_admin_to: str = "hello@heymeld.com"
+    resend_from: str = "Meld Waitlist <noreply@heymeld.com>"
+
     @model_validator(mode="after")
     def _require_public_base_url_in_non_dev(self) -> "Settings":
         # APP_ENV is the same env var /ops/status reports as uptime_env.

@@ -22,6 +22,14 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  # `actions: write` lets the post-merge fan-out below actually dispatch
+  # "TestFlight Release" via `gh workflow run` (the workflow-dispatch API
+  # requires it). Without it the dispatch silently 403'd, so auto-merged iOS
+  # fixes never reached TestFlight (the #199 fix sat un-shipped until a manual
+  # dispatch). workflow_dispatch is the documented exception to the rule that
+  # GITHUB_TOKEN-authored events do not trigger runs, so the dispatched build
+  # does fire.
+  actions: write
 
 jobs:
   classify:

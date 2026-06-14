@@ -6,7 +6,7 @@ name: "Tab Bar IA: 5 tabs in design-system order with sentence-case labels"
 # with Coach in the center. If a future change reorders tabs or renames
 # them away from sentence case, this flow fails before TestFlight.
 
-- runFlow: ../helpers/auth_bypass.yaml
+- runFlow: ../../helpers/auth_bypass.yaml
 
 # All 5 tab buttons present (matches the accessibility identifiers
 # emitted by MeldTabBar via Tab.allCases.rawValue).

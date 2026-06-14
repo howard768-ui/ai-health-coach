@@ -20,6 +20,7 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.ratelimit import limiter
 from app.database import get_db
 from app.models.waitlist import WaitlistSignup
 from app.services.waitlist_notifier import send_new_signup_alert
@@ -71,6 +72,7 @@ def _client_ip(request: Request) -> str | None:
 
 
 @router.post("/subscribe", response_model=WaitlistSubscribeResponse)
+@limiter.limit("10/minute")
 async def subscribe(
     payload: WaitlistSubscribeRequest,
     request: Request,
@@ -85,9 +87,9 @@ async def subscribe(
     the row's `submissions` counter + `updated_at`. This keeps the API UX clean
     for users re-submitting the form (e.g. after a "did it work?" moment).
     """
-    # Apply rate limiting — wired via slowapi decorator on app.state.limiter.
-    # slowapi reads request.state, so we apply the decorator via the app.state.limiter
-    # at router registration time instead of here.
+    # Rate limited to 10/minute per real client IP via the @limiter.limit
+    # decorator above (audit C2 re-gate: the documented limit was previously
+    # not actually applied; only the global default protected this endpoint).
 
     normalized_email = payload.email.lower().strip()
 
@@ -113,9 +115,11 @@ async def subscribe(
         if payload.utm_content:
             existing.utm_content = payload.utm_content[:128]
         await db.commit()
+        # Log a redacted form: full emails in info logs end up in the log
+        # aggregator (PII hygiene, same class as apple_user_id truncation).
         logger.info(
-            "waitlist re-submission email=%s submissions=%d",
-            normalized_email,
+            "waitlist re-submission email=%s*** submissions=%d",
+            normalized_email[:3],
             existing.submissions,
         )
         return WaitlistSubscribeResponse(
@@ -148,8 +152,11 @@ async def subscribe(
             status_code=500, detail="Could not save your email. Please try again."
         ) from exc
 
+    # Log a redacted form (PII hygiene, same as the re-submission path).
     logger.info(
-        "waitlist new signup email=%s source=%s", normalized_email, payload.source
+        "waitlist new signup email=%s*** source=%s",
+        normalized_email[:3],
+        payload.source,
     )
 
     # Fire-and-forget admin alert via Resend. Runs after the response is sent

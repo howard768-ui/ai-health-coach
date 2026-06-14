@@ -153,37 +153,11 @@ struct DataSourceDetailView: View {
     }
 
     private func formatSyncTime(_ rawString: String) -> String {
-        // Try multiple date formats since backend may return various ISO formats
-        let formatters: [DateFormatter] = {
-            let formats = [
-                "yyyy-MM-dd'T'HH:mm:ss.SSSSSS",
-                "yyyy-MM-dd'T'HH:mm:ss.SSS",
-                "yyyy-MM-dd'T'HH:mm:ss",
-            ]
-            return formats.map { fmt in
-                let f = DateFormatter()
-                f.dateFormat = fmt
-                f.locale = Locale(identifier: "en_US_POSIX")
-                return f
-            }
-        }()
-
-        var date: Date?
-        for formatter in formatters {
-            if let d = formatter.date(from: rawString) {
-                date = d
-                break
-            }
-        }
-
-        // Also try ISO8601
-        if date == nil {
-            let iso = ISO8601DateFormatter()
-            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            date = iso.date(from: rawString)
-        }
-
-        guard let parsed = date else { return rawString }
+        // Backend timestamps are naive UTC (Python isoformat, see BackendDate).
+        // Use the shared parser so this screen reads them as UTC instead of
+        // device-local time — the previous inline DateFormatter array never set
+        // timeZone = UTC, so "last synced" was off by the device's UTC offset.
+        guard let parsed = BackendDate.parse(rawString) else { return rawString }
 
         let relative = RelativeDateTimeFormatter()
         relative.unitsStyle = .full
@@ -193,9 +167,19 @@ struct DataSourceDetailView: View {
     private func connectSource() {
         switch source {
         case .oura:
-            // Open Oura OAuth flow in Safari
-            let url = APIClient.shared.serverRoot.appendingPathComponent("auth/oura")
-            UIApplication.shared.open(url)
+            // Audit P2d: fetch a CSRF-safe authorize URL from the authenticated
+            // /auth/oura/start (signed, single-user state), then open it in
+            // Safari. Replaces opening /auth/oura with no state (which 422'd)
+            // / a client-supplied apple_user_id (CSRF-prone).
+            Task {
+                do {
+                    let url = try await APIClient.shared.startOuraConnect()
+                    _ = await UIApplication.shared.open(url)
+                } catch {
+                    syncMessage = "Couldn't start Oura connection. Try again."
+                    DSHaptic.error()
+                }
+            }
         case .appleHealth:
             Task {
                 await HealthKitService.shared.requestAuthorization()

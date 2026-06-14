@@ -57,7 +57,6 @@ from app.models import ml_insights as _ml_insights_models  # noqa: F401
 from app.models import ml_synth as _ml_synth_models  # noqa: F401
 from app.models.correlation import UserCorrelation
 from app.models.health import HealthMetricRecord, SleepRecord
-from app.models.meal import MealRecord
 from ml import api as ml_api
 from ml.synth.conversations import generate_conversations
 from ml.synth.demographics import generate_demographics

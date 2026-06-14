@@ -11,7 +11,7 @@ flows through the reconciliation layer, and every feature reads from here.
 import logging
 from datetime import date, timedelta
 
-from sqlalchemy import select, desc, and_
+from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.health import HealthMetricRecord, SleepRecord
@@ -96,7 +96,10 @@ async def get_latest_health_data(db: AsyncSession, user_id: str) -> dict:
         }
 
     # Fallback: read directly from SleepRecord (Oura-only, pre-reconciliation)
-    logger.info("No reconciled data — falling back to SleepRecord for user %s", user_id)
+    logger.info(
+        "No reconciled data; falling back to SleepRecord for user %s",
+        user_id[:12] + "...",
+    )
     return await _get_sleep_record_data(db, user_id)
 
 
@@ -111,13 +114,12 @@ async def get_health_data_for_date(db: AsyncSession, user_id: str, target_date: 
 async def get_health_data_range(db: AsyncSession, user_id: str, days: int = 7) -> list[dict]:
     """Get reconciled health data for a date range (for trends)."""
     start = (date.today() - timedelta(days=days - 1)).isoformat()
-    results = []
 
     result = await db.execute(
         select(HealthMetricRecord)
         .where(
             HealthMetricRecord.user_id == user_id,
-            HealthMetricRecord.is_canonical == True,
+            HealthMetricRecord.is_canonical,
             HealthMetricRecord.date >= start,
         )
         .order_by(HealthMetricRecord.date)
@@ -143,7 +145,7 @@ async def _get_reconciled_metrics(db: AsyncSession, user_id: str, target_date: s
         select(HealthMetricRecord).where(
             HealthMetricRecord.user_id == user_id,
             HealthMetricRecord.date == target_date,
-            HealthMetricRecord.is_canonical == True,
+            HealthMetricRecord.is_canonical,
         )
     )
     records = result.scalars().all()
@@ -172,7 +174,7 @@ async def _get_reconciled_baselines(db: AsyncSession, user_id: str, days: int = 
     result = await db.execute(
         select(HealthMetricRecord).where(
             HealthMetricRecord.user_id == user_id,
-            HealthMetricRecord.is_canonical == True,
+            HealthMetricRecord.is_canonical,
             HealthMetricRecord.date >= start,
         )
     )
@@ -208,7 +210,6 @@ async def _get_sleep_record_data(db: AsyncSession, user_id: str) -> dict:
         return {}
 
     latest = records[0]
-    avg_eff = sum(r.efficiency or 0 for r in records) / len(records)
     avg_rhr = sum(r.resting_hr or 0 for r in records if r.resting_hr) / max(1, sum(1 for r in records if r.resting_hr))
     avg_hrv = sum(r.hrv_average or 0 for r in records if r.hrv_average) / max(1, sum(1 for r in records if r.hrv_average))
 

@@ -21,10 +21,14 @@ Config:
                         Generate one with:
                             python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
-Missing key behavior: when ``ENCRYPTION_KEY`` is unset or unparseable, the
-module logs a warning once and falls through to plaintext storage. This is
-the legacy behavior, preserved here. A follow-up change will tighten this to
-fail closed in production.
+Missing key behavior: in NON-production environments, when ``ENCRYPTION_KEY``
+is unset or unparseable the module logs a warning once and falls through to
+plaintext storage (local dev with a SQLite DB and no real secrets is the
+expected state). In production this fails CLOSED: a missing, unparseable, or
+empty-after-parse key raises ``EncryptionConfigError`` rather than silently
+storing PHI in plaintext. The startup gate in ``core/secrets.py`` already
+blocks a totally-unset key at deploy time; this closes the malformed-key path
+and is defense in depth at every encrypt/decrypt call.
 
 Legacy plaintext rows: a row whose ciphertext cannot be decoded by any
 configured key is assumed to be a pre-encryption row and returned unchanged.
@@ -48,6 +52,15 @@ from sqlalchemy.types import String, TypeDecorator
 from app.config import settings
 
 logger = logging.getLogger("meld.encryption")
+
+
+class EncryptionConfigError(RuntimeError):
+    """Raised in production when the encryption key is missing or unusable.
+
+    Fail closed: rather than silently storing/returning PHI in plaintext (the
+    legacy behavior, kept only for non-production dev), production raises so the
+    request fails loudly and the misconfiguration is caught immediately.
+    """
 
 
 _cipher: Optional[MultiFernet] = None
@@ -82,8 +95,21 @@ def _get_cipher() -> Optional[MultiFernet]:
         return _cipher
 
     raw = settings.encryption_key or ""
+    # Fail closed for EVERY non-development environment, not just the exact
+    # string "production". Staging/preview hold real or copied PHI, and a
+    # misspelled APP_ENV ("prod", "Production") must not silently disable
+    # encryption. Only development and test get the plaintext fallback. Matches
+    # the "anything but development is a serious env" rule already in config.py.
+    is_prod = settings.app_env.strip().lower() not in ("development", "test")
 
     if not raw:
+        if is_prod:
+            # Fail closed. The startup gate normally catches this, but never
+            # silently store PHI in plaintext in production.
+            raise EncryptionConfigError(
+                "ENCRYPTION_KEY is not set in production; refusing to store or "
+                "read PHI in plaintext."
+            )
         if not _missing_key_warned:
             logger.warning(
                 "ENCRYPTION_KEY not set (APP_ENV=%s). Values will be stored "
@@ -96,10 +122,18 @@ def _get_cipher() -> Optional[MultiFernet]:
     try:
         keys = _parse_keys(raw)
     except (ValueError, TypeError) as e:
+        if is_prod:
+            raise EncryptionConfigError(
+                f"ENCRYPTION_KEY failed to parse in production: {e}"
+            ) from e
         logger.error("ENCRYPTION_KEY failed to parse, falling back to plaintext: %s", e)
         return None
 
     if not keys:
+        if is_prod:
+            raise EncryptionConfigError(
+                "ENCRYPTION_KEY parsed to zero keys in production."
+            )
         logger.warning("ENCRYPTION_KEY parsed to zero keys, falling back to plaintext.")
         return None
 
@@ -145,10 +179,15 @@ def decrypt(ciphertext: str | None) -> str | None:
     try:
         return cipher.decrypt(ciphertext.encode()).decode()
     except InvalidToken:
+        # Do NOT log any slice of the value: once PHI columns route through
+        # EncryptedString, a legacy plaintext row's first chars would be real
+        # chat/health content. Log only non-content discriminators. A
+        # Fernet-shaped value that misses (looks_fernet=True) is a drained-key
+        # or tampered row, not legacy plaintext, and is worth alerting on.
         logger.warning(
-            "encryption.decrypt_miss len=%d prefix=%r",
+            "encryption.decrypt_miss len=%d looks_fernet=%s",
             len(ciphertext),
-            ciphertext[:6],
+            ciphertext.startswith("gAAAAA"),
         )
         return ciphertext
     except (ValueError, UnicodeDecodeError) as e:

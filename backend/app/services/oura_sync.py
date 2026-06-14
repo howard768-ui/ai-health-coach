@@ -36,7 +36,7 @@ async def ensure_valid_token(db: AsyncSession, user_id: str) -> str | None:
     if not token:
         # Logs internal user_id only.
         # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
-        logger.warning("No Oura token found for user %s", user_id)
+        logger.warning("No Oura token found for user %s", user_id[:12] + "...")
         return None
 
     # Check if token expires within 5 minutes
@@ -136,7 +136,6 @@ async def sync_user_data(db: AsyncSession, user_id: str) -> dict:
         session_efficiency = session.get("efficiency")  # 0-100 percentage
 
         # Parse bedtime timestamps from session data
-        contributors = day.get("contributors", {})
         bedtime_start = _parse_time(session.get("bedtime_start"))
         bedtime_end = _parse_time(session.get("bedtime_end"))
 

@@ -16,9 +16,8 @@ Entry point is ``train_ranker_pipeline``, called from ``ml.api``.
 
 from __future__ import annotations
 
-import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -214,7 +213,7 @@ async def generate_synth_training_data(
     from ml import api as ml_api
     from datetime import date, timedelta
 
-    rng = np.random.default_rng(seed)
+    np.random.default_rng(seed)
 
     manifest = await ml_api.generate_synth_cohort(
         db, n_users=n_users, days=90, seed=seed
@@ -238,8 +237,11 @@ async def generate_synth_training_data(
         await ml_api.run_associations(db, user_id, window_days=60)
         await db.flush()
 
-        # Generate candidates.
-        candidates = await generate_candidates(db, user_id)
+        # Generate candidates through the same reference date the features
+        # were materialized to. `through_date` is a required parameter;
+        # omitting it made every cold-start training run crash with a
+        # TypeError before any model was produced. Audit P3/D2 (round-1 #31).
+        candidates = await generate_candidates(db, user_id, through_date=today)
         if not candidates:
             continue
 
@@ -468,20 +470,21 @@ async def train_ranker_pipeline(
         logger.warning("Synth training data generation produced 0 samples")
         return None
 
-    # Merge real + synth (real weighted 5x if present).
+    # Merge real + synth (real weighted 5x if present). rank:pairwise has no
+    # per-sample weights, so weighting is approximated by replicating the
+    # real block 5x. Labels, per-row user_ids, and per-group sizes are
+    # replicated in LOCKSTEP with X: the previous version replicated only X
+    # (5r+s rows against r+s labels), so any mixed-source training crashed
+    # on shape mismatch, and the discarded y-extension meant the intended
+    # weighting never existed. Replicated rows keep their original user_id,
+    # so GroupKFold still puts all copies of a user in the same fold (no
+    # leakage). Audit P3/D2 (round-1 #32).
     if real_data.n_samples > 0:
-        X = np.vstack([real_data.X, synth_data.X])
-        # Weight real data 5x.
-        real_weights = np.full(real_data.n_samples, 5.0, dtype=np.float32)
-        synth_weights = np.ones(synth_data.n_samples, dtype=np.float32)
-        # We don't use sample weights for rank:pairwise directly,
-        # but we replicate real samples to approximate weighting.
-        for _ in range(4):  # 4 extra copies = 5x total
-            X = np.vstack([X, real_data.X])
-            synth_data_y_ext = np.concatenate([synth_data.y, real_data.y])
-        y = np.concatenate([real_data.y, synth_data.y])
-        user_ids = real_data.user_ids + synth_data.user_ids
-        groups = np.concatenate([real_data.groups, synth_data.groups])
+        replication = 5
+        X = np.vstack([real_data.X] * replication + [synth_data.X])
+        y = np.concatenate([real_data.y] * replication + [synth_data.y])
+        user_ids = real_data.user_ids * replication + synth_data.user_ids
+        groups = np.concatenate([real_data.groups] * replication + [synth_data.groups])
         source = "mixed"
     else:
         X = synth_data.X
@@ -489,6 +492,13 @@ async def train_ranker_pipeline(
         user_ids = synth_data.user_ids
         groups = synth_data.groups
         source = "synth"
+
+    # Invariants train_ranker depends on; a violation here means the merge
+    # above regressed.
+    assert len(X) == len(y) == len(user_ids) == int(np.sum(groups)), (
+        f"training data misaligned: X={len(X)} y={len(y)} "
+        f"user_ids={len(user_ids)} sum(groups)={int(np.sum(groups))}"
+    )
 
     trained = train_ranker(X, y, groups, user_ids)
     logger.info(

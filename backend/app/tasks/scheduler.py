@@ -4,8 +4,8 @@ Uses APScheduler's AsyncIOScheduler to run periodic jobs.
 All jobs check anti-fatigue gates before sending.
 """
 
+import asyncio
 import logging
-from datetime import datetime
 
 import httpx
 import sentry_sdk
@@ -29,8 +29,6 @@ from app.services.oura_sync import sync_user_data as oura_sync
 from app.services.peloton_sync import sync_user_data as peloton_sync
 from app.services.garmin_sync import sync_user_data as garmin_sync
 from app.services.data_reconciliation import reconcile_day
-from app.services.correlation_engine import compute_correlations
-from app.services.literature import literature_service
 from app.services.oura_webhooks import list_subscriptions, renew_subscription
 from app.services.offline_eval import run_offline_eval
 from app.core.constants import ReadinessThreshold, StreakGoal, TEST_DEVICE_TOKEN, WeeklyReviewThreshold
@@ -113,7 +111,7 @@ async def _get_active_tokens(db, user_id: str) -> list:
     result = await db.execute(
         select(DeviceToken).where(
             DeviceToken.user_id == user_id,
-            DeviceToken.is_active == True,
+            DeviceToken.is_active,
             DeviceToken.token != TEST_DEVICE_TOKEN,
         )
     )
@@ -226,10 +224,14 @@ async def _run_notification_job(
             logger.info("No active users — skipping %s", job_name)
             return
 
+        # Materialize ids/names while the ORM objects are fresh: the mid-loop
+        # rollback() below expires them, and touching an expired attribute on
+        # an async session raises MissingGreenlet, which would kill the rest
+        # of the tick (the exact failure the rollback exists to prevent).
+        user_rows = [(u.apple_user_id, _first_name_of(u)) for u in users]
+
         sent = 0
-        for user in users:
-            user_id = user.apple_user_id
-            user_name = _first_name_of(user)
+        for user_id, user_name in user_rows:
             try:
                 if not await can_send(db, user_id, category):
                     continue
@@ -249,6 +251,9 @@ async def _run_notification_job(
                 sent += 1
             except Exception:  # noqa: BLE001 -- one user's failure must not abort the rest
                 logger.exception("%s failed for user %s", job_name, user_id[:12])
+                # Roll back so a failed/pending transaction does not poison the
+                # shared session for the remaining users in this run (audit P2a).
+                await db.rollback()
     logger.info("%s complete (sent=%d/%d)", job_name, sent, len(users))
 
 
@@ -286,7 +291,12 @@ async def morning_brief_job():
             }
         # Fallback to AI generation
         logger.info("Morning brief from AI (no template for context=%s)", context)
-        return notification_engine.generate_morning_brief(health_data, user_name=user_name)
+        # Offload the synchronous Claude SDK call so it does not block the
+        # AsyncIOScheduler event loop (and all API request handling) for the
+        # 10-30s of the call. Audit P2a.
+        return await asyncio.to_thread(
+            notification_engine.generate_morning_brief, health_data, user_name=user_name
+        )
 
     await _run_notification_job("morning_brief_job", "morning_brief", build)
 
@@ -312,7 +322,9 @@ async def coaching_nudge_job():
         # "daily" sends every day — no skip
 
         health_data = await _get_latest_health_data(db, user_id)
-        return content_generator.generate_coaching_nudge(health_data, user_name=user_name)
+        return await asyncio.to_thread(
+            content_generator.generate_coaching_nudge, health_data, user_name=user_name
+        )
 
     await _run_notification_job("coaching_nudge_job", "coaching_nudge", build)
 
@@ -321,7 +333,9 @@ async def bedtime_coaching_job():
     """Wind-down reminder timed to sleep window."""
     async def build(db, user_id, user_name):
         health_data = await _get_latest_health_data(db, user_id)
-        return content_generator.generate_bedtime_coaching(health_data, user_name=user_name)
+        return await asyncio.to_thread(
+            content_generator.generate_bedtime_coaching, health_data, user_name=user_name
+        )
 
     await _run_notification_job("bedtime_coaching_job", "bedtime_coaching", build)
 
@@ -443,15 +457,32 @@ async def oura_sync_job():
         if not users:
             logger.info("oura_sync_job: no active users yet")
             return
-        for user in users:
-            user_id = user.apple_user_id
+        # Ids materialized up front: rollback() in the except expires the ORM
+        # rows, and expired-attribute access on an async session raises
+        # MissingGreenlet (see _run_notification_job).
+        for user_id in [u.apple_user_id for u in users]:
             try:
                 result = await oura_sync(db, user_id)
                 logger.info("oura_sync_job user=%s result=%s", user_id[:12], result)
-                today = utcnow_naive().strftime("%Y-%m-%d")
-                await reconcile_day(db, user_id, today)
+                # Guard reconcile on a successful sync, matching the Peloton and
+                # Garmin jobs below. Reconciling after a failed sync re-blesses
+                # stale canonical rows from whatever partial state the failed
+                # sync left behind. Audit P3 (round-2 low, scheduler.py:449).
+                if result.get("status") == "ok":
+                    today = utcnow_naive().strftime("%Y-%m-%d")
+                    await reconcile_day(db, user_id, today)
             except Exception:  # noqa: BLE001 -- isolate one user's failure
                 logger.exception("oura_sync_job failed for user %s", user_id[:12])
+                # Clear any failed transaction so one user's DB error cannot
+                # poison the shared session for every later user in the tick
+                # (PendingRollbackError cascade). Same fix as the notification
+                # jobs. Audit P3 (round-2 A46 class). The rollback itself must
+                # never raise (that would defeat the isolation it exists for),
+                # so swallow + log any failure.
+                try:
+                    await db.rollback()
+                except Exception:  # noqa: BLE001
+                    logger.debug("rollback after per-user failure also failed", exc_info=True)
 
 
 async def peloton_sync_job():
@@ -462,8 +493,8 @@ async def peloton_sync_job():
         if not users:
             logger.info("peloton_sync_job: no active users yet")
             return
-        for user in users:
-            user_id = user.apple_user_id
+        # Ids materialized up front; see oura_sync_job.
+        for user_id in [u.apple_user_id for u in users]:
             try:
                 result = await peloton_sync(db, user_id)
                 logger.info("peloton_sync_job user=%s result=%s", user_id[:12], result)
@@ -472,6 +503,11 @@ async def peloton_sync_job():
                     await reconcile_day(db, user_id, today)
             except Exception:  # noqa: BLE001
                 logger.exception("peloton_sync_job failed for user %s", user_id[:12])
+                # Clear any failed transaction; see oura_sync_job above.
+                try:
+                    await db.rollback()
+                except Exception:  # noqa: BLE001
+                    logger.debug("rollback after per-user failure also failed", exc_info=True)
 
 
 async def garmin_sync_job():
@@ -482,8 +518,8 @@ async def garmin_sync_job():
         if not users:
             logger.info("garmin_sync_job: no active users yet")
             return
-        for user in users:
-            user_id = user.apple_user_id
+        # Ids materialized up front; see oura_sync_job.
+        for user_id in [u.apple_user_id for u in users]:
             try:
                 result = await garmin_sync(db, user_id)
                 logger.info("garmin_sync_job user=%s result=%s", user_id[:12], result)
@@ -492,6 +528,11 @@ async def garmin_sync_job():
                     await reconcile_day(db, user_id, today)
             except Exception:  # noqa: BLE001
                 logger.exception("garmin_sync_job failed for user %s", user_id[:12])
+                # Clear any failed transaction; see oura_sync_job above.
+                try:
+                    await db.rollback()
+                except Exception:  # noqa: BLE001
+                    logger.debug("rollback after per-user failure also failed", exc_info=True)
 
 
 async def webhook_renewal_job():
@@ -605,7 +646,6 @@ async def baselines_job():
     yet. Phase 3 wires L2 associations to use baselines; Phase 4 wires
     insight candidates to use anomalies.
     """
-    from datetime import date as _date
 
     from ml import api as ml_api
 

@@ -9,10 +9,9 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 
 from app.api.deps import CurrentUser
+from app.core.ratelimit import limiter
 from app.core.time import user_hour, user_today_iso
 from app.database import get_db
 from app.models.meal import MealRecord, FoodItemRecord
@@ -30,8 +29,9 @@ logger = logging.getLogger("meld.meals")
 
 router = APIRouter(prefix="/api", tags=["meals"])
 
-# Rate limit AI-backed food recognition to prevent budget exhaustion (P1-4)
-limiter = Limiter(key_func=get_remote_address)
+# Rate limit AI-backed food recognition to prevent budget exhaustion (P1-4).
+# Uses the single shared limiter (app.core.ratelimit), keyed on the real client
+# IP, not the Cloudflare edge IP. Audit C2.
 
 
 def _meal_type_from_time() -> str:
@@ -151,14 +151,23 @@ async def get_meals(
     )
     meals = result.scalars().all()
 
+    # One query for all items across the day's meals instead of one query
+    # per meal (N+1 on the hot Log-tab read path). Audit P4/G.
+    items_by_meal: dict[int, list[FoodItemRecord]] = {}
+    if meals:
+        items_result = await db.execute(
+            select(FoodItemRecord).where(
+                FoodItemRecord.meal_id.in_([meal.id for meal in meals])
+            )
+        )
+        for item in items_result.scalars().all():
+            items_by_meal.setdefault(item.meal_id, []).append(item)
+
     meal_responses = []
     total_cal, total_p, total_c, total_f = 0, 0.0, 0.0, 0.0
 
     for meal in meals:
-        items_result = await db.execute(
-            select(FoodItemRecord).where(FoodItemRecord.meal_id == meal.id)
-        )
-        items = items_result.scalars().all()
+        items = items_by_meal.get(meal.id, [])
         response = _meal_to_response(meal, items)
         meal_responses.append(response)
         total_cal += response.total_calories

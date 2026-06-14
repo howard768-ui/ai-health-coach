@@ -103,13 +103,13 @@ def test_scorer_honors_plan_weights_by_component():
     c = _fake_candidate("c", effect=0, conf=1.0, actionability=0, novelty=0)
     a = _fake_candidate("a", effect=0, conf=0, actionability=1.0, novelty=0)
     n = _fake_candidate("n", effect=0, conf=0, actionability=0, novelty=1.0)
-    l = _fake_candidate("l", effect=0, conf=0, actionability=0, novelty=0, literature=True)
+    lit = _fake_candidate("l", effect=0, conf=0, actionability=0, novelty=0, literature=True)
 
     assert heuristic.heuristic_score(e) == pytest.approx(heuristic._W_EFFECT)
     assert heuristic.heuristic_score(c) == pytest.approx(heuristic._W_CONFIDENCE)
     assert heuristic.heuristic_score(a) == pytest.approx(heuristic._W_ACTIONABILITY)
     assert heuristic.heuristic_score(n) == pytest.approx(heuristic._W_NOVELTY)
-    assert heuristic.heuristic_score(l) == pytest.approx(heuristic._W_LITERATURE)
+    assert heuristic.heuristic_score(lit) == pytest.approx(heuristic._W_LITERATURE)
 
 
 def test_rank_sorts_by_score_desc():

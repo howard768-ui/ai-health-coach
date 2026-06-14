@@ -13,7 +13,6 @@ Implements 7 architectural principles from the AI research corpus:
 
 import json
 import logging
-from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -496,8 +495,18 @@ class CoachEngine:
         custom_goal_text: str | None = None,
         history: list[dict] | None = None,
         signal_context: "SignalContext | None" = None,
+        model_tier: "ModelTier | None" = None,
     ) -> dict:
         """Full multi-agent pipeline for processing a coaching query.
+
+        ``model_tier`` pins the model explicitly and skips keyword routing.
+        Notification generators MUST pass it: their ``query`` is a static
+        prompt template, not user text, and the cross-domain regex in
+        ``Deliberator.route`` matches template wording ("Connect TWO health
+        domains", "PATTERN"), silently billing every coaching nudge at Opus
+        rates. Audit P3/C3. Safety still escalates: concerning health data
+        overrides the explicit tier up to Opus, never down. Do not pass
+        ``ModelTier.RULES`` (rules answers are for user chat queries only).
 
         Returns dict with: response, routing_decision, safety_check, evidence_citations
         """
@@ -515,8 +524,24 @@ class CoachEngine:
         )
         logger.info(f"Safety check: concerning={safety.is_concerning}, reasons={safety.reasons}")
 
-        # Step 2: Deliberation-first routing (DOVA: decide before computing)
-        routing = Deliberator.route(query, health_data, safety)
+        # Step 2: Deliberation-first routing (DOVA: decide before computing).
+        # An explicit caller tier bypasses keyword routing entirely (the
+        # query may be a static template, not user text); safety can still
+        # escalate it to Opus, never downgrade.
+        if model_tier is not None:
+            effective_tier = ModelTier.OPUS if safety.requires_opus else model_tier
+            routing = RoutingDecision(
+                tier=effective_tier,
+                reason=(
+                    "safety escalation over explicit caller tier"
+                    if effective_tier is not model_tier
+                    else "explicit caller tier (keyword routing bypassed)"
+                ),
+                confidence=1.0,
+                safety_flag=safety.requires_opus,
+            )
+        else:
+            routing = Deliberator.route(query, health_data, safety)
         logger.info(f"Routing: tier={routing.tier.value}, reason={routing.reason}")
 
         # Step 3: If rules can answer, return immediately (no AI cost)
@@ -559,8 +584,14 @@ class CoachEngine:
             if custom_goal_trimmed else ""
         )
 
+        # Privacy (audit B3): do NOT send the user's real first name to the
+        # model. The privacy policy states the name is not shared with the LLM
+        # provider unless necessary, and it is not necessary for coaching. Use a
+        # generic placeholder; the prompt constant (and eval parity) are
+        # unchanged, and the `user_name` argument is retained for API
+        # compatibility but intentionally not forwarded to the model.
         system_prompt = EVIDENCE_BOUND_SYSTEM_PROMPT.format(
-            user_name=user_name,
+            user_name="the user",
             health_data=json.dumps(health_data, indent=2),
             goals=", ".join(user_goals or ["general wellness"]),
             custom_goal_context=custom_goal_context,

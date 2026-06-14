@@ -90,6 +90,32 @@ def test_scrub_phi_preserves_safe_strings():
     assert _scrub_phi(safe) == safe
 
 
+# ── _init_sentry: never capture request bodies or frame locals ────────────
+
+
+def test_init_sentry_disables_body_and_local_capture(monkeypatch):
+    """Audit A4: the regex scrubber only matches a few structured patterns, so
+    it cannot catch free-form chat/meal/health text. Sentry must therefore not
+    capture request bodies or frame-local variables at all, since those can
+    hold PHI on an exception.
+    """
+    import sentry_sdk
+    from app import main as appmain
+
+    captured: dict = {}
+    monkeypatch.setattr(sentry_sdk, "init", lambda **kw: captured.update(kw))
+    monkeypatch.setattr(
+        appmain.settings, "sentry_dsn", "https://public@o0.ingest.sentry.io/1"
+    )
+
+    appmain._init_sentry()
+
+    assert captured["send_default_pii"] is False
+    assert captured["max_request_body_size"] == "never"
+    assert captured["include_local_variables"] is False
+    assert captured["before_send"] is not None
+
+
 # ── _real_remote_address: rate-limit-IP determination ─────────────────
 
 

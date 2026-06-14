@@ -9,6 +9,9 @@ struct MainTabView: View {
     @State private var selectedTab: Tab = .home
     @State private var coachViewModel = CoachViewModel()
     @Environment(\.scenePhase) private var scenePhase
+    // URL-scheme deep links (meld://coach, etc.) set this via NotificationNavigator;
+    // nothing consumed it before, so those links silently no-op'd. Audit P2c.
+    @ObservedObject private var navigator = NotificationNavigator.shared
 
     var body: some View {
         // iOS 26 SDK: the previous ZStack(.bottom) + safeAreaInset(.bottom)
@@ -57,6 +60,13 @@ struct MainTabView: View {
                 switchToTab(tab)
             }
         }
+        // Consume URL-scheme deep-link tab navigation while foregrounded.
+        .onChange(of: navigator.pendingTab) { _, tab in
+            if let tab {
+                navigator.pendingTab = nil
+                switchToTab(tab)
+            }
+        }
     }
 
     /// Check if a notification action set a pending tab to navigate to.
@@ -64,6 +74,12 @@ struct MainTabView: View {
     /// notification arriving during the consume call waits and is preserved
     /// for the next checkPendingTab() invocation.
     private func checkPendingTab() {
+        // Cold-launch / foreground: a deep link may have set the navigator's
+        // pendingTab before this view was observing it.
+        if let tab = navigator.pendingTab {
+            navigator.pendingTab = nil
+            switchToTab(tab)
+        }
         guard let tabName = AppDelegate.pendingTab.consume() else { return }
         if let tab = Tab(rawValue: tabName) {
             switchToTab(tab)

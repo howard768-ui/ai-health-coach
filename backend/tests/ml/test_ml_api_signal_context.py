@@ -22,7 +22,6 @@ from datetime import date, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.core.time import utcnow_naive
 from app.database import Base
 from app.models.correlation import UserCorrelation
 # Register ORM models before create_all.

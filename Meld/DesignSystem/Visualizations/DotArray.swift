@@ -92,7 +92,11 @@ struct DotArray: View {
                 .font(DSTypography.caption)
                 .foregroundStyle(statusColor)
         }
-        .onAppear { todayPulse = true }
+        // UITestMode: the today-dot pulse is repeatForever; keep it static
+        // under UI automation (see UITestMode).
+        .onAppear {
+            if !UITestMode.isActive { todayPulse = true }
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Training: \(completedCount) of \(target) days this week. \(statusText).")
     }

@@ -36,7 +36,6 @@ from ml.mlops.evidently_reports import (
     DriftReport,
     _compute_drift,
     _fetch_partition,
-    _try_build_evidently_html,
     build_drift_report,
 )
 
@@ -290,7 +289,7 @@ async def test_build_drift_report_sets_html_backend_when_evidently_succeeds(
     await _seed_rows(db, is_synthetic=False, n_users=3, n_days=60, hrv_mean=50.0, seed=1)
     await _seed_rows(db, is_synthetic=True, n_users=3, n_days=60, hrv_mean=50.0, seed=2)
 
-    fake_html = tmp_path / "drift_fake.html"
+    tmp_path / "drift_fake.html"
 
     def _fake_html_writer(ref, cur, output_path):
         output_path.write_text("<html>stub</html>", encoding="utf-8")

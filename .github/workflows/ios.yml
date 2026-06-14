@@ -29,11 +29,22 @@ on:
 
   workflow_dispatch:
 
-# Cancel any in-flight run for the same workflow + ref. Saves runner
-# minutes when a PR pushes new commits faster than CI completes.
+  # Nightly full validation at 4am ET: build + smoke + the backend-data E2E
+  # set (the maestro-backend job below only runs on non-PR events). Scheduled
+  # in idle hours so the ~80 macOS runner minutes do not deepen the daytime
+  # queue (CLAUDE.md convention 11).
+  schedule:
+    - cron: '0 8 * * *'
+
+# Cancel any in-flight run for the same workflow + ref, but only for PRs.
+# Saves runner minutes when a PR pushes new commits faster than CI completes.
+# On main, successive auto-merges share the same ref, so cancel-in-progress
+# was killing every in-flight main run before its Maestro job finished:
+# 2 of the 3 main-push iOS runs around 2026-06-09 ended "cancelled" and main
+# had no completed E2E verification at all. Main runs now queue instead.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-and-test:
@@ -85,6 +96,11 @@ jobs:
         # `set -o pipefail` propagates xcodebuild's exit code past xcpretty.
         run: |
           set -o pipefail
+          # tee the raw xcodebuild stream to a file BEFORE xcpretty. xcpretty
+          # silently drops most per-file diagnostics on the macos-15 runner
+          # (an internal parse error kills its output), so the raw log is the
+          # only reliable record of compile/test failures. Uploaded by the
+          # "Upload raw xcodebuild logs" step on failure.
           xcodebuild \
             -project Meld.xcodeproj \
             -scheme "$SCHEME" \
@@ -92,7 +108,31 @@ jobs:
             -configuration Debug \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            build 2>&1 | xcpretty
+            build 2>&1 | tee "$RUNNER_TEMP/xcodebuild-build.log" | xcpretty
+
+      # Hand the freshly built .app to the Maestro job so it stops rebuilding
+      # the identical bundle from scratch (10 to 13.5 min observed per run,
+      # 42-44% of the old Maestro job budget). ditto is mandatory: zipping
+      # through upload-artifact directly strips executable bits and symlinks
+      # from .app bundles, producing an uninstallable app.
+      - name: Package app for E2E (Maestro)
+        run: |
+          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData \
+            -name "Meld.app" \
+            -path "*/Debug-iphonesimulator/*" \
+            -not -path "*.xctest/*" \
+            -not -path "*-Runner.app/*" \
+            | head -1)
+          echo "Packaging: $APP_PATH"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Info.plist"
+          ditto -c -k --keepParent "$APP_PATH" "$RUNNER_TEMP/Meld-app.zip"
+
+      - name: Upload app for E2E (Maestro)
+        uses: actions/upload-artifact@v7
+        with:
+          name: meld-app-sim
+          path: ${{ runner.temp }}/Meld-app.zip
+          retention-days: 2
 
       # Split test invocations by target type because they need different
       # signing settings and have different failure modes. Running them in
@@ -100,10 +140,17 @@ jobs:
       # per-suite summaries from xcpretty were getting swallowed when any
       # target hit exit 65.
       #
-      # Unit + snapshot tests run INSIDE the Meld.app test host and work
-      # fine with CODE_SIGNING_ALLOWED=NO, which matches the Build step's
-      # known-good config. Any snapshot-tests failure uploads diff PNGs
-      # via the Upload snapshot failures step at the end of this job.
+      # Unit + snapshot tests run INSIDE the Meld.app test host. They must
+      # be ad-hoc signed (CODE_SIGN_IDENTITY="-"), NOT built with
+      # CODE_SIGNING_ALLOWED=NO: an unsigned test host has no
+      # application-identifier entitlement, so the simulator keychain has no
+      # access group and every SecItem call returns errSecMissingEntitlement
+      # (-34018). That broke all KeychainStore + AuthManager tests (27 of
+      # 111) silently from 2026-05-03 until the iOS gate was added. Ad-hoc
+      # signing applies the entitlements and gives the keychain a valid
+      # access group on the simulator (the same config the UI test step
+      # already uses). Any snapshot-tests failure uploads diff PNGs via the
+      # Upload snapshot failures step at the end of this job.
 
       - name: Test (unit)
         # MeldSnapshotTests is deliberately NOT run here. The ~50 committed
@@ -124,9 +171,9 @@ jobs:
             -configuration Debug \
             -only-testing:MeldTests \
             -skip-testing:MeldSnapshotTests \
-            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
-            test 2>&1 | xcpretty --test --color
+            test 2>&1 | tee "$RUNNER_TEMP/xcodebuild-test-unit.log" | xcpretty --test --color
 
       # Pre-warm the simulator before the UI test to dodge the macos-15 +
       # iOS 18 RunningBoard race. Symptom on a cold boot: xctrunner asks
@@ -184,7 +231,19 @@ jobs:
             -retry-tests-on-failure \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
-            test 2>&1 | xcpretty --test --color
+            test 2>&1 | tee "$RUNNER_TEMP/xcodebuild-test-ui.log" | xcpretty --test --color
+
+      - name: Upload raw xcodebuild logs
+        # always() so we capture the raw stream even when xcpretty greens a
+        # step it mis-parsed. These plain-text logs contain the actual
+        # compile errors and per-test failures that xcpretty drops.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-raw-logs
+          path: |
+            ${{ runner.temp }}/xcodebuild-*.log
+          if-no-files-found: ignore
 
       - name: Upload build logs on failure
         if: failure()
@@ -208,83 +267,107 @@ jobs:
     name: Maestro E2E
     needs: build-and-test
     runs-on: macos-15
-    # Bumped from 20 to 40. This job was previously skipping because
-    # build-and-test was red; now that the build passes, the full
-    # Maestro flow set (12 flows) runs end-to-end and takes ~24 minutes
-    # on the macos-15 runner — just over the previous 20-minute job
-    # timeout. `|| true` on the `maestro test` step already swallows
-    # per-flow exit codes; the timeout here is about wall-clock ceiling.
-    timeout-minutes: 40
+    # Restructured 2026-06-12 after every run at the 16-flow count was being
+    # cancelled at the old 40-minute ceiling (setup alone ate 16m42s-17m41s,
+    # and a healthy full suite needed 26m10s of flow time on top: best case
+    # ~43 min, so the ceiling was mathematically unreachable). Changes:
+    #   1. The app bundle is downloaded from the build-and-test job instead
+    #      of being rebuilt here (saves 10 to 13.5 min per run).
+    #   2. Only maestro/flows/smoke/ (UI-local flows) runs in CI. The
+    #      backend-data flows live in maestro/flows/backend/ and stay
+    #      quarantined until CI has a seeded local backend. See
+    #      maestro/README.md.
+    #   3. `|| true` is gone: assertion failures now fail this job. Maestro
+    #      E2E is NOT in the auto-merge gate's REQUIRED set, so this cannot
+    #      block or slow Tier 0 auto-merges; it is honest signal only.
+    #      Previously a run where the iOS driver timed out and ZERO flows
+    #      executed reported green (runs 27218539765 / 27224907237).
+    # Budget: download+unpack ~2m, boot+install ~2m, driver startup up to 5m,
+    # 10 smoke flows ~12-15m, headroom for the 4-6x macos-15 runner variance.
+    timeout-minutes: 30
 
     env:
-      DESTINATION: 'platform=iOS Simulator,name=iPhone 16 Pro'
+      # The Maestro iOS driver's default startup wait is shorter than what a
+      # loaded macos-15 runner needs: two June 9 runs aborted with
+      # IOSDriverTimeoutException before any flow ran. 5 minutes of headroom.
+      MAESTRO_DRIVER_STARTUP_TIMEOUT: "300000"
+      MAESTRO_CLI_NO_ANALYTICS: "1"
 
     steps:
       - uses: actions/checkout@v6
 
       - name: Install Maestro
+        # Pinned: the unpinned installer drifts (cli-2.6.1 shipped mid-debug
+        # on 2026-06-12, changing driver failure timing between consecutive
+        # runs of the same workflow). Bump deliberately.
         run: |
-          curl -Ls "https://get.maestro.mobile.dev" | bash
+          curl -Ls "https://get.maestro.mobile.dev" | MAESTRO_VERSION=2.6.1 bash
           echo "$HOME/.maestro/bin" >> $GITHUB_PATH
 
-      - name: Install xcodegen
-        run: brew install xcodegen
+      - name: Download app from build-and-test
+        uses: actions/download-artifact@v8
+        with:
+          name: meld-app-sim
+          path: ${{ runner.temp }}/e2e-app
 
-      - name: Build app
-        # Use plain `build`, not `build-for-testing`. The Maestro job drives
-        # the live app through the simulator; it does not run XCTest.
-        #
-        # `| tail -5` was hiding build failures (the last 5 lines of a
-        # failing build are usually summary counts, not error messages)
-        # which was the real root cause of the earlier "Missing bundle ID"
-        # simctl error: the build had 4 Swift errors and produced an
-        # incomplete .app. Removed so failures surface clearly.
+      - name: Unpack app
         run: |
-          set -o pipefail
-          xcodegen generate
-          xcodebuild \
-            -project Meld.xcodeproj \
-            -scheme Meld \
-            -destination "$DESTINATION" \
-            -configuration Debug \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            build
+          ditto -x -k "$RUNNER_TEMP/e2e-app/Meld-app.zip" "$RUNNER_TEMP/e2e-app"
+          ls "$RUNNER_TEMP/e2e-app"
 
+      # Same prewarm pattern as the UI-test step in build-and-test: boot by
+      # UDID, wait for bootstatus, give SpringBoard time to settle. The old
+      # bare `simctl boot || true` here did not wait, which contributed to
+      # the driver startup races.
       - name: Boot Simulator
+        id: prewarm
         run: |
-          xcrun simctl boot "iPhone 16 Pro" || true
+          DEVICE_ID=$(xcrun simctl list devices available \
+            | grep "iPhone 16 Pro (" \
+            | head -1 \
+            | grep -oE '[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}')
+          if [ -z "$DEVICE_ID" ]; then
+            echo "::error::Could not find iPhone 16 Pro simulator UDID"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          echo "Booting simulator $DEVICE_ID"
+          xcrun simctl boot "$DEVICE_ID" 2>/dev/null || true
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+          sleep 8
           xcrun simctl list devices booted
+          echo "device_id=$DEVICE_ID" >> "$GITHUB_OUTPUT"
 
       - name: Install app
         run: |
-          # Find the app-under-test bundle, excluding any nested .xctest or
-          # -Runner.app path just in case a future build introduces them.
-          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData \
-            -name "Meld.app" \
-            -path "*/Debug-iphonesimulator/*" \
-            -not -path "*.xctest/*" \
-            -not -path "*-Runner.app/*" \
-            | head -1)
+          APP_PATH="$RUNNER_TEMP/e2e-app/Meld.app"
           echo "Installing: $APP_PATH"
           # Sanity-check Info.plist so the CI log points at the root cause
-          # if the build ever regresses, rather than a cryptic simctl error.
+          # if the artifact ever regresses, rather than a cryptic simctl error.
           /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Info.plist"
-          xcrun simctl install booted "$APP_PATH"
+          xcrun simctl install "${{ steps.prewarm.outputs.device_id }}" "$APP_PATH"
 
-      - name: Run Maestro flows
+      - name: Run Maestro flows (smoke set)
+        # Step-level timeout, NOT just the job-level one: when the job-level
+        # timeout fires, GitHub hard-kills the runner and the always() upload
+        # steps below never execute, which is how the 2026-06-10 incident lost
+        # every artifact. A step timeout kills only this step, so the junit
+        # and debug output survive for post-mortem.
+        timeout-minutes: 20
         run: |
           # --debug-output dumps per-flow accessibility trees + screenshots
           # so post-mortem artifact inspection can tell us what the
           # screen actually looked like when an assertion failed. This
           # is the diagnostic path for the PR #51 tab-bar regression.
-          maestro test maestro/flows/ \
+          maestro test maestro/flows/smoke/ \
             --format junit \
             --output maestro-results.xml \
-            --debug-output maestro-debug/ || true
+            --debug-output maestro-debug/
 
       - name: Pull auth-debug.txt from simulator
-        if: always()
+        # failure() not always(): on green runs these diagnostics added
+        # ~4.5 min of macOS runner time for nothing.
+        if: failure()
         run: |
           # MeldApp writes this file at boot inside #if DEBUG with the
           # state of its isUITesting flag + launch args + UserDefaults.
@@ -303,7 +386,7 @@ jobs:
           fi
 
       - name: Diagnostic snapshot (a11y hierarchy + screenshot)
-        if: always()
+        if: failure()
         run: |
           # --debug-output didn't produce files on the previous PR #55 run,
           # so grab the state directly. Launch the app fresh with the same
@@ -335,13 +418,74 @@ jobs:
           echo "=== Head of hierarchy (first 100 lines) ==="
           head -100 diag-hierarchy.json
 
+      - name: Collect crash reports (issue #199)
+        # The intermittent crash-at-launch (#199) strikes random flows within
+        # seconds of launchApp but never left a collected stack trace.
+        # Simulator app crashes write .ips reports to the host
+        # ~/Library/Logs/DiagnosticReports, and sometimes into the device's
+        # own data container. Gather both, print the newest Meld report inline
+        # so the log carries a trace even if the artifact is missed, and stage
+        # the rest for upload.
+        if: failure()
+        run: |
+          set +e
+          DEST="crash-reports"
+          mkdir -p "$DEST"
+          echo "=== Host DiagnosticReports (simulator apps report here) ==="
+          find "$HOME/Library/Logs/DiagnosticReports" -type f \
+            \( -iname 'Meld*' -o -iname '*.ips' -o -iname '*.crash' \) \
+            2>/dev/null -print -exec cp {} "$DEST/" \;
+          echo "=== Simulator-container DiagnosticReports ==="
+          find "$HOME/Library/Developer/CoreSimulator/Devices" \
+            -path '*/data/Library/Logs/DiagnosticReports/*' -type f \
+            2>/dev/null -print -exec cp {} "$DEST/" \;
+          echo "=== Collected ==="
+          ls -la "$DEST" 2>/dev/null
+          LATEST=$(ls -t "$DEST"/Meld* 2>/dev/null | head -1)
+          if [ -n "$LATEST" ]; then
+            echo "=== Newest Meld crash report: $LATEST (first 150 lines) ==="
+            head -150 "$LATEST"
+          else
+            echo "::warning::No Meld crash report found in DiagnosticReports. The crash may not have written an .ips on this runner, or the process name differs (#199)."
+          fi
+
+      - name: Upload crash reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: maestro-crash-reports
+          path: crash-reports/
+          if-no-files-found: ignore
+
       - name: Upload Maestro results
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: maestro-results
           path: maestro-results.xml
-          if-no-files-found: ignore
+          # error, not ignore: a "green" run that produced no junit means the
+          # driver never ran a flow. `ignore` hid exactly that for two runs
+          # on 2026-06-09.
+          if-no-files-found: error
+
+      - name: Bundle Maestro debug output
+        if: always()
+        run: |
+          # Two reasons to tar instead of uploading maestro-debug/ directly:
+          # 1. Maestro's real per-flow logs live in maestro-debug/.maestro/,
+          #    a hidden dir upload-artifact silently drops by default (that
+          #    left the 2026-06-10 11-minute permission hang with zero
+          #    surviving driver logs).
+          # 2. Maestro names per-flow debug files after flow display names,
+          #    which can contain characters upload-artifact rejects: the
+          #    colon in "Tab Bar IA: 5 tabs..." failed the first run of the
+          #    repaired job. A tarball is immune to flow naming.
+          if [ -d maestro-debug ]; then
+            tar -czf maestro-debug.tgz maestro-debug/
+            ls -la maestro-debug.tgz
+          else
+            echo "maestro-debug/ absent; nothing to bundle"
+          fi
 
       - name: Upload Maestro debug (screenshots + a11y dumps)
         if: always()
@@ -349,10 +493,191 @@ jobs:
         with:
           name: maestro-debug
           path: |
-            maestro-debug/
+            maestro-debug.tgz
             auth-debug.txt
             diag-screen-after-bypass.png
             diag-hierarchy.json
+          if-no-files-found: ignore
+
+  maestro-backend:
+    name: Maestro E2E (backend)
+    # The six backend-data flows (maestro/flows/backend/) against a real
+    # seeded local backend. NOT run on PRs: these flows exercise live
+    # endpoints and add ~25 macOS runner minutes, which is the wrong thing
+    # to spend on every PR push (CLAUDE.md convention 11). Main pushes,
+    # the nightly schedule, and manual dispatch get the full signal.
+    #
+    # Backend contract (rehearsed end-to-end locally 2026-06-12):
+    # - The simulator app hardwires http://127.0.0.1:8000/api, so uvicorn
+    #   binds 127.0.0.1:8000 on the runner.
+    # - POST /auth/dev-login (development/test only) mints the token pair;
+    #   app/scripts/seed_e2e.py seeds 7 SleepRecord rows for the same fixed
+    #   user, which satisfies both /api/dashboard (Sleep Efficiency + HRV
+    #   Status cards, flow 13) and /api/trends (flow 14).
+    # - ANTHROPIC_API_KEY must be NON-EMPTY: an empty key raises TypeError
+    #   inside the anthropic SDK (not an APIError subclass), escapes the
+    #   route's except clause, and 500s /api/dashboard on every request. A
+    #   dummy value fails as AuthenticationError, which IS caught, giving
+    #   the deterministic fallback insight.
+    # - APP_ENV stays unset (development default): APP_ENV=test trips the
+    #   PUBLIC_BASE_URL config validator at import.
+    if: github.event_name != 'pull_request'
+    needs: build-and-test
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    env:
+      MAESTRO_DRIVER_STARTUP_TIMEOUT: "300000"
+      MAESTRO_CLI_NO_ANALYTICS: "1"
+      JWT_SECRET_KEY: "test-jwt-secret-must-be-long-enough-for-hs256-aaaaaaaa"
+      ENCRYPTION_KEY: "T0TXLkHFSeZRYGIIejSFVkhQrvRE-bWLkwXSkkdWiKQ="
+      ANTHROPIC_API_KEY: "ci-dummy-key"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Maestro
+        run: |
+          curl -Ls "https://get.maestro.mobile.dev" | MAESTRO_VERSION=2.6.1 bash
+          echo "$HOME/.maestro/bin" >> $GITHUB_PATH
+
+      - name: Download app from build-and-test
+        uses: actions/download-artifact@v8
+        with:
+          name: meld-app-sim
+          path: ${{ runner.temp }}/e2e-app
+
+      - name: Unpack app
+        run: |
+          ditto -x -k "$RUNNER_TEMP/e2e-app/Meld-app.zip" "$RUNNER_TEMP/e2e-app"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync
+
+      - name: Migrate, seed, and start backend
+        working-directory: backend
+        env:
+          DATABASE_URL: sqlite+aiosqlite:///${{ runner.temp }}/meld-e2e.db
+        run: |
+          uv run python -m alembic upgrade head
+          uv run python -m app.scripts.seed_e2e
+          # Background uvicorn survives across steps; nohup detaches it from
+          # this step's shell. /readyz greens only after alembic_version
+          # exists, which is why migration runs first.
+          nohup uv run python -m uvicorn app.main:app \
+            --host 127.0.0.1 --port 8000 \
+            > "$RUNNER_TEMP/uvicorn-e2e.log" 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8000/readyz >/dev/null; then
+              echo "Backend ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Backend never became ready"
+          tail -50 "$RUNNER_TEMP/uvicorn-e2e.log"
+          exit 1
+
+      - name: Boot Simulator
+        id: prewarm
+        run: |
+          DEVICE_ID=$(xcrun simctl list devices available \
+            | grep "iPhone 16 Pro (" \
+            | head -1 \
+            | grep -oE '[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}')
+          if [ -z "$DEVICE_ID" ]; then
+            echo "::error::Could not find iPhone 16 Pro simulator UDID"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          xcrun simctl boot "$DEVICE_ID" 2>/dev/null || true
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+          sleep 8
+          echo "device_id=$DEVICE_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Install app
+        run: |
+          APP_PATH="$RUNNER_TEMP/e2e-app/Meld.app"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Info.plist"
+          xcrun simctl install "${{ steps.prewarm.outputs.device_id }}" "$APP_PATH"
+
+      - name: Run Maestro flows (backend set)
+        timeout-minutes: 20
+        run: |
+          maestro test maestro/flows/backend/ \
+            --format junit \
+            --output maestro-results-backend.xml \
+            --debug-output maestro-debug/
+
+      - name: Dump backend log on failure
+        if: failure()
+        run: tail -100 "$RUNNER_TEMP/uvicorn-e2e.log" || true
+
+      - name: Collect crash reports (issue #199)
+        # Same crash-at-launch class as the smoke job; collect simulator app
+        # crash reports so a backend-flow launch crash leaves a real trace.
+        if: failure()
+        run: |
+          set +e
+          DEST="crash-reports"
+          mkdir -p "$DEST"
+          echo "=== Host DiagnosticReports (simulator apps report here) ==="
+          find "$HOME/Library/Logs/DiagnosticReports" -type f \
+            \( -iname 'Meld*' -o -iname '*.ips' -o -iname '*.crash' \) \
+            2>/dev/null -print -exec cp {} "$DEST/" \;
+          echo "=== Simulator-container DiagnosticReports ==="
+          find "$HOME/Library/Developer/CoreSimulator/Devices" \
+            -path '*/data/Library/Logs/DiagnosticReports/*' -type f \
+            2>/dev/null -print -exec cp {} "$DEST/" \;
+          echo "=== Collected ==="
+          ls -la "$DEST" 2>/dev/null
+          LATEST=$(ls -t "$DEST"/Meld* 2>/dev/null | head -1)
+          if [ -n "$LATEST" ]; then
+            echo "=== Newest Meld crash report: $LATEST (first 150 lines) ==="
+            head -150 "$LATEST"
+          else
+            echo "::warning::No Meld crash report found in DiagnosticReports (#199)."
+          fi
+
+      - name: Upload crash reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: maestro-crash-reports-backend
+          path: crash-reports/
+          if-no-files-found: ignore
+
+      - name: Bundle Maestro debug output
+        if: always()
+        run: |
+          if [ -d maestro-debug ]; then
+            tar -czf maestro-debug.tgz maestro-debug/
+          fi
+
+      - name: Upload Maestro backend results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: maestro-results-backend
+          path: maestro-results-backend.xml
+          if-no-files-found: error
+
+      - name: Upload Maestro backend debug
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: maestro-debug-backend
+          path: |
+            maestro-debug.tgz
+            ${{ runner.temp }}/uvicorn-e2e.log
           if-no-files-found: ignore
 
   swiftlint:
@@ -367,8 +692,34 @@ jobs:
         run: brew install swiftlint
 
       - name: Run SwiftLint
-        # Don't fail the build on lint warnings — we haven't established a
-        # baseline yet. This will become blocking once the codebase is clean.
+        # Blocking since the 2026-06-12 honesty sweep: error-severity
+        # violations fail the job (warnings do not; no --strict yet). The
+        # old `|| echo` hid 411 violations (184 serious) for the project's
+        # entire life. Baseline rules live in /.swiftlint.yml with a ratchet
+        # plan. Scope widened to the two targets the old invocation missed.
         run: |
-          swiftlint --reporter github-actions-logging Meld/ MeldTests/ MeldSnapshotTests/ || \
-            echo "::warning::SwiftLint found issues"
+          swiftlint --reporter github-actions-logging Meld/ MeldTests/ MeldSnapshotTests/ MeldUITests/ MeldNotificationServiceExtension/
+
+  ios-log-guardrails:
+    name: iOS log guardrails
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Forbid token values in print/Log statements
+        # Audit follow-up (2026-06-12), iOS twin of the backend
+        # phi-log-guardrails job. Forbids Swift string interpolation of
+        # token-ish identifiers inside print/Log calls (the PR-K class:
+        # `print("token: \(pair.accessToken.prefix(20))")`). Messages ABOUT
+        # tokens without interpolated values stay legal. Zero matches at
+        # introduction. Runs on ubuntu: grep needs no macOS runner minutes.
+        run: |
+          MATCHES=$(grep -rnE '(print|Log\.[a-z]+\.(info|debug|error|warning|notice|fault))\([^)]*\\\([^)]*([tT]oken|jwt|[bB]earer)' Meld/ MeldNotificationServiceExtension/ || true)
+          if [ -n "$MATCHES" ]; then
+            echo "$MATCHES"
+            echo "::error::Log statement interpolates a credential-bearing value. Log an event description, not the credential."
+            exit 1
+          fi
+          echo "No credential-value logging found."

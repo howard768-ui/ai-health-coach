@@ -15,16 +15,24 @@ struct DSTextField: View {
     let placeholder: String
     @Binding var text: String
     var style: DSTextFieldStyle = .standard
+    /// When true, masks input (passwords/credentials). Audit P2c.
+    var isSecure: Bool = false
     var onSubmit: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: DSSpacing.sm) {
-            TextField(placeholder, text: $text)
-                .font(DSTypography.body)
-                .foregroundStyle(DSColor.Text.primary)
-                .onSubmit {
-                    onSubmit?()
+            Group {
+                if isSecure {
+                    SecureField(placeholder, text: $text)
+                } else {
+                    TextField(placeholder, text: $text)
                 }
+            }
+            .font(DSTypography.body)
+            .foregroundStyle(DSColor.Text.primary)
+            .onSubmit {
+                onSubmit?()
+            }
 
             if !text.isEmpty {
                 Button(action: {

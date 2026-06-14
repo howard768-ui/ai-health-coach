@@ -14,7 +14,7 @@ Results are logged and stored for the analytics endpoint.
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession

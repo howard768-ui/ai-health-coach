@@ -3,60 +3,20 @@ import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from app.config import settings
 from app.core.apple import verify_siwa_configured
+from app.core.ratelimit import limiter, _real_remote_address  # noqa: F401 (re-exported)
 from app.core.secrets import verify_secrets_configured
 from app.routers import auth, auth_apple, health, coach, notifications, meals, user, peloton_auth, garmin_auth, webhooks, waitlist, mascot, insights, privacy, experiments, ops, ml_ops
 from app.services.apns import verify_apns_configured
 from app.tasks.scheduler import start_scheduler, stop_scheduler
-
-
-def _real_remote_address(request: Request) -> str:
-    """Extract the real client IP, preferring trusted forwarded headers.
-
-    The default `slowapi.util.get_remote_address` returns
-    `request.client.host`, which on Railway behind Cloudflare is always
-    the CF edge IP. That collapses every rate-limit bucket to one shared
-    counter — any single user can exhaust the limit for everyone.
-
-    Trust order:
-      1. `cf-connecting-ip` (Cloudflare-injected, only present when traffic
-         actually transited Cloudflare; CF strips any client-supplied value)
-      2. First entry of `x-forwarded-for` (Railway's edge sets this; behaves
-         like an XFF chain so we take the leftmost = original client)
-      3. `request.client.host` (raw socket peer, last resort)
-
-    The 2026-04-29 audit (BLOCKER, backend_app_audit.md) flagged this as
-    rate-limit-bypass-via-shared-bucket. Fixing here applies to every
-    endpoint that uses the global limiter.
-    """
-    cf_ip = request.headers.get("cf-connecting-ip")
-    if cf_ip:
-        return cf_ip.strip()
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        first = xff.split(",", 1)[0].strip()
-        if first:
-            return first
-    if request.client and request.client.host:
-        return request.client.host
-    return "unknown"
-
-
-# Rate limiter — keyed by real client IP via _real_remote_address (above).
-# Default limits apply to every endpoint unless overridden with
-# @limiter.limit("..."). Stricter limits applied to auth + AI endpoints to
-# prevent cost-exhaustion attacks (P1-4).
-limiter = Limiter(
-    key_func=_real_remote_address,
-    default_limits=["120/minute"],  # Generous baseline for normal app usage
-)
 
 
 _PHI_SCRUB_PATTERNS = [
@@ -137,6 +97,12 @@ def _init_sentry():
         profiles_sample_rate=0.1,
         environment=settings.app_env,
         send_default_pii=False,  # Never send PHI/PII to Sentry
+        # The before_send scrubber only matches a few structured patterns and
+        # cannot catch free-form chat/meal/health text. Do not capture request
+        # bodies or frame-local variables at all: on an exception in coach/meal
+        # handlers those would otherwise ship raw PHI to Sentry. Audit A4.
+        max_request_body_size="never",
+        include_local_variables=False,
         before_send=_sentry_before_send,
         integrations=integrations,
     )
@@ -187,6 +153,11 @@ app = FastAPI(
 # auto-returns 429 with Retry-After when limits are exceeded.
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+# Register the middleware so default_limits apply to EVERY endpoint, not just
+# those with an explicit @limiter.limit decorator. Without this the global
+# limit was dead config and undecorated endpoints (incl. Claude-hitting ones)
+# were unlimited (audit C2). No-op when the limiter is disabled (dev/test).
+app.add_middleware(SlowAPIMiddleware)
 
 # CORS — restrict to known origins. P3-3: read public URL from settings
 # so changing the deploy URL is one config change, not a grep job.
@@ -208,6 +179,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# PHI cache hygiene (audit P3/E6): every /api/* response can carry PHI
+# (dashboard metrics, chat history, trends, meals, profile). Without
+# Cache-Control, intermediaries and client URL caches (iOS URLCache writes
+# to disk and lands in device backups) may persist those bodies. no-store
+# on the whole API surface: nothing under /api/ is cacheable-safe, and
+# blanket beats maintaining a PHI-route allowlist that rots. The iOS client
+# also disables its URLCache (defense-in-depth). /media (badge PNGs, no
+# PHI) and /healthz//readyz probes are intentionally not covered.
+@app.middleware("http")
+async def no_store_on_api(request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
 
 # Serve notification media (recovery badges, etc.)
 media_dir = Path(__file__).resolve().parent.parent / "media"
@@ -235,6 +222,7 @@ app.include_router(ml_ops.router)      # Read-only ML ops endpoints for Phase 5 
 
 
 @app.get("/")
+@limiter.exempt
 async def health_check():
     """Public root endpoint — no DB ping. Marketing/curiosity check only."""
     return {
@@ -246,12 +234,14 @@ async def health_check():
 
 
 @app.get("/healthz")
+@limiter.exempt
 async def healthz():
     """Liveness probe — process is up. No DB check (cheap, fast)."""
     return {"status": "ok"}
 
 
 @app.get("/readyz")
+@limiter.exempt
 async def readyz():
     """Readiness probe — verifies DB *and schema* are healthy.
 

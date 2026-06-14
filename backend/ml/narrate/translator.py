@@ -19,16 +19,18 @@ that pins the voice invariant.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 
 logger = logging.getLogger("meld.ml.narrate")
 
 
-# Model tier for narration. Kept here (not in a shared constants module)
-# because Phase 7 may introduce a per-user narration budget and we want
-# the override to be local.
-NARRATION_MODEL = "claude-opus-4-20250514"
+# Narration uses the Opus tier; the concrete model ID comes from Settings
+# (PR #95 centralization) so a model deprecation is one Railway env-var
+# override, not a grep across services. The previous hardcoded ID here was
+# the single holdout defeating that invariant. Audit P4/G. Resolved lazily
+# in _call_narrator so importing this module never touches settings.
 NARRATION_MAX_TOKENS = 280
 
 # System prompt for the narrator. Deliberately short — we want Opus's
@@ -158,11 +160,19 @@ async def generate_narration(
 
         client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
+    # Centralized model ID (PR #95): one env-var override at deploy time.
+    from app.config import settings as _settings
+    narration_model = _settings.anthropic_model_opus
+
     # Single Opus call; keep max_tokens small so the model does not meander.
     raw_text: str | None = None
     try:
-        response = client.messages.create(  # type: ignore[attr-defined]
-            model=NARRATION_MODEL,
+        # Offload the synchronous Anthropic SDK call so generate_narration (an
+        # async function reached from the /explain-finding request path) does
+        # not block the event loop for the duration of the Opus call. Audit P2a.
+        response = await asyncio.to_thread(
+            client.messages.create,  # type: ignore[attr-defined]
+            model=narration_model,
             system=_NARRATION_SYSTEM_PROMPT,
             max_tokens=NARRATION_MAX_TOKENS,
             messages=[{"role": "user", "content": user_prompt}],

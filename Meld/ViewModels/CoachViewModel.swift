@@ -30,7 +30,7 @@ final class CoachViewModel {
                     ChatMessage(
                         role: msg.role == "coach" ? .coach : .user,
                         content: Self.content(from: msg.blocks, fallback: msg.content),
-                        timestamp: ISO8601DateFormatter().date(from: msg.createdAt) ?? Date(),
+                        timestamp: BackendDate.parse(msg.createdAt) ?? Date(),
                         messageId: msg.id
                     )
                 }

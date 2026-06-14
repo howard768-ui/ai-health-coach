@@ -1,6 +1,7 @@
 # APNs private keys — NEVER commit
 backend/keys/
 *.p8
+*.p12
 
 # Xcode
 #

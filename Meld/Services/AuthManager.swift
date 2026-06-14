@@ -160,18 +160,19 @@ actor AuthManager {
         }
     }
 
-    /// Called when an API request returns 401. Tries one refresh; if that
-    /// fails, wipes the session and signals the UI to return to login.
+    /// Called when the 401-recovery path has already been exhausted: either
+    /// `refresh()` just threw, or a request 401'd again WITH a freshly
+    /// refreshed token. Wipes the session and signals the UI to return to
+    /// login. Deliberately does NOT attempt another refresh: the old version
+    /// re-called `refresh()` here, firing a second, pointless POST
+    /// /auth/refresh after the first had already failed (refreshTask is
+    /// cleared synchronously on failure, so it was a fresh network call,
+    /// not a dedup). Audit P3/E7 (round-2 low, APIClient 113-128 /
+    /// AuthManager 165-176).
     func handleUnauthorized() async {
-        do {
-            _ = try await refresh()
-            // Success — caller should retry the original request
-        } catch {
-            // Refresh failed — treat as signed out
-            try? await KeychainStore.shared.wipe()
-            await MainActor.run {
-                AuthSessionState.shared.setSignedIn(false)
-            }
+        try? await KeychainStore.shared.wipe()
+        await MainActor.run {
+            AuthSessionState.shared.setSignedIn(false)
         }
     }
 

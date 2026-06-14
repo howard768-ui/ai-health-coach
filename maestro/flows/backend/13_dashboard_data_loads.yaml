@@ -1,0 +1,27 @@
+appId: com.heymeld.app
+name: "Dashboard — Real metric values load (not '--' or '0')"
+---
+- runFlow: ../../helpers/auth_bypass.yaml
+
+# Bounce to Trends and back before asserting. DashboardView fires its one
+# .task fetch at launch, racing the fire-and-forget dev-login in MeldApp; if
+# the fetch wins, it 401s into a FullScreenError that never auto-retries
+# (tapping the already-selected home tab is a no-op). Switching tabs
+# destroys and recreates DashboardView, so the re-entry fetch runs with the
+# dev-login token guaranteed present.
+- tapOn:
+    id: "tab-trends"
+- tapOn:
+    id: "tab-home"
+
+# Wait for dashboard data to load (metric labels are uppercase)
+- extendedWaitUntil:
+    visible: "SLEEP EFFICIENCY"
+    timeout: 10000
+
+# Verify metric cards are visible with real values
+- assertVisible: "SLEEP EFFICIENCY"
+- assertVisible: "HRV STATUS"
+
+# Screenshot for visual verification
+- takeScreenshot: dashboard_data_loaded

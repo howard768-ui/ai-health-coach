@@ -1,6 +1,15 @@
 appId: com.heymeld.app
 ---
 - launchApp:
+    # Explicit empty map. Without it Maestro defaults to "set ALL permissions
+    # to allow" on every launch, which shells out to applesimutils + simctl
+    # privacy with a hard-coded 5-minute wait per subprocess. On a wedged
+    # macos-15 simulator TCC daemon that produced an 11m11s flow failure
+    # ("Unable to set permissions for app com.heymeld.app: null", main run
+    # 27243414560 on 2026-06-10). No current flow needs a granted permission;
+    # if one ever does, pre-grant it once via `xcrun simctl privacy` in the
+    # CI Boot Simulator step instead of per-launch here.
+    permissions: {}
     arguments:
       uitesting-skip-auth: "true"
 

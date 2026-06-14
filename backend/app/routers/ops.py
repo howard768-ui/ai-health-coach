@@ -18,6 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.ratelimit import limiter
 from app.database import get_db
 
 logger = logging.getLogger("meld.ops")
@@ -166,6 +167,7 @@ async def _get_pipeline_freshness(db: AsyncSession) -> PipelineFreshness:
 
 
 @router.get("/status", response_model=OpsStatusResponse)
+@limiter.exempt  # monitoring/health endpoint: never rate-limited (audit C2 re-gate)
 async def ops_status(db: AsyncSession = Depends(get_db)) -> OpsStatusResponse:
     """Aggregated ops status for autonomous monitoring agents.
 

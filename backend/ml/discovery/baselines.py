@@ -28,7 +28,6 @@ from typing import TYPE_CHECKING
 from sqlalchemy import delete, select
 
 if TYPE_CHECKING:
-    import numpy as np
     import pandas as pd
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -118,7 +117,6 @@ def compute_baseline_for_series(
       don't extrapolate.
     """
     import numpy as np
-    import pandas as pd
     from statsmodels.tsa.seasonal import STL
 
     # Drop leading / trailing NaNs so we fit only on the observed span.
@@ -230,7 +228,6 @@ def fit_bocpd(
     change point exceeds the threshold.
     """
     import numpy as np
-    import pandas as pd
 
     values = series.to_numpy(dtype=float)
     dates = list(series.index)

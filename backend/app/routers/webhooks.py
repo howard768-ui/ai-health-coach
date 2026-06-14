@@ -4,13 +4,12 @@ Handles incoming webhooks from Oura (and future data sources).
 When Oura sends a webhook, we trigger a sync + coaching notification.
 """
 
+import asyncio
 import json as _json
 import logging
-from datetime import datetime
 
 import httpx
 from fastapi import APIRouter, Request, Query, Depends
-from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -22,8 +21,7 @@ from app.services.oura_webhooks import (
     list_subscriptions,
 )
 
-from app.api.deps import CurrentUser
-from app.core.constants import TEST_DEVICE_TOKEN
+from app.api.deps import CurrentAdminUser
 from app.core.time import utcnow_naive
 
 logger = logging.getLogger("meld.webhooks")
@@ -110,13 +108,22 @@ async def oura_webhook_receiver(request: Request, db: AsyncSession = Depends(get
     # Per-user throttle: at most 1 sync per 60s regardless of webhook count.
     # Prevents a webhook flood from exhausting Oura API quota or Claude budget.
     # In-memory store is fine for single-instance Railway deploy.
-    from datetime import datetime, timedelta
+    from datetime import timedelta
     if not hasattr(oura_webhook_receiver, "_last_sync_at"):
         oura_webhook_receiver._last_sync_at = {}  # type: ignore[attr-defined]
     last_sync_map = oura_webhook_receiver._last_sync_at  # type: ignore[attr-defined]
-    last = last_sync_map.get(user_oura_id)
     now = utcnow_naive()
-    if last and (now - last) < timedelta(seconds=60):
+    window = timedelta(seconds=60)
+    # Evict entries older than the throttle window. The key is the
+    # attacker-supplied Oura user_id; without eviction this map grows unbounded
+    # (memory-growth DoS). Entries past the window carry no throttle meaning, so
+    # pruning them bounds the map to users seen within the last 60s.
+    cutoff = now - window
+    stale = [k for k, ts in last_sync_map.items() if ts < cutoff]
+    for k in stale:
+        del last_sync_map[k]
+    last = last_sync_map.get(user_oura_id)
+    if last and (now - last) < window:
         logger.info("Oura webhook throttled (last sync %ds ago)", (now - last).seconds)
         return {"status": "throttled"}
     last_sync_map[user_oura_id] = now
@@ -198,11 +205,21 @@ async def oura_webhook_receiver(request: Request, db: AsyncSession = Depends(get
     if data_type == "daily_readiness" and event_type in ("create", "update"):
         try:
             from app.services.notification_engine import notification_engine
-            from app.services.apns import apns_client
-            from app.models.notification import DeviceToken
+            from app.services.anti_fatigue import can_send
+            from app.tasks.scheduler import _get_active_tokens, _send_notification
             from app.models.health import SleepRecord
             from app.models.user import User
             from sqlalchemy import desc
+
+            # Respect the SAME anti-fatigue gates as the scheduled morning brief
+            # (preferences, quiet hours, daily budget, throttle). Previously the
+            # webhook brief bypassed all of these and was never recorded, so it
+            # double-sent alongside the scheduled job and skewed the daily budget
+            # / open tracking. Audit P2b (round-2 H). Gate before the Claude call
+            # so a gated user costs nothing.
+            if not await can_send(db, meld_user_id, "morning_brief"):
+                logger.info("Webhook morning brief gated by anti-fatigue; skipping")
+                return {"status": "ok"}
 
             # Load user for personalized greeting
             user_result = await db.execute(
@@ -228,32 +245,21 @@ async def oura_webhook_receiver(request: Request, db: AsyncSession = Depends(get
                     "total_sleep_hours": (sr.total_sleep_seconds or 0) / 3600,
                 }
 
-                # Generate morning brief
-                content = notification_engine.generate_morning_brief(
-                    health_data, user_name=user_name
+                # Generate morning brief. Offload the synchronous Claude SDK
+                # call so it does not block the event loop for the 10-30s of the
+                # call while the webhook handler is running. Audit P2a.
+                content = await asyncio.to_thread(
+                    notification_engine.generate_morning_brief,
+                    health_data,
+                    user_name=user_name,
                 )
 
-                # Send push notification
-                token_result = await db.execute(
-                    select(DeviceToken).where(
-                        DeviceToken.user_id == meld_user_id,
-                        DeviceToken.is_active == True,
-                        DeviceToken.token != TEST_DEVICE_TOKEN,
-                    )
-                )
-                for token_row in token_result.scalars().all():
-                    await apns_client.send_push(
-                        device_token=token_row.token,
-                        title=content["title"],
-                        body=content["body"],
-                        category=content["apns"]["category"],
-                        thread_id=content["apns"]["thread_id"],
-                        interruption_level="time-sensitive",
-                        relevance_score=1.0,
-                        data=content["data"],
-                        media_url=content.get("media_url"),
-                    )
-                    logger.info("Webhook-triggered morning brief sent")
+                # Send + record via the shared helper so the send counts against
+                # anti-fatigue budget and open tracking, like the scheduled job.
+                tokens = await _get_active_tokens(db, meld_user_id)
+                if tokens:
+                    await _send_notification(db, meld_user_id, tokens, content)
+                    logger.info("Webhook-triggered morning brief sent (gated + recorded)")
 
         except (httpx.HTTPError, SQLAlchemyError, KeyError, ValueError) as e:
             logger.error("Failed to send webhook-triggered notification: %s", e)
@@ -265,7 +271,7 @@ async def oura_webhook_receiver(request: Request, db: AsyncSession = Depends(get
 
 @router.post("/oura/register")
 async def register_webhooks(
-    current_user: CurrentUser,
+    current_user: CurrentAdminUser,
     base_url: str = Query(...),
 ):
     """Register all Oura webhook subscriptions.
@@ -303,7 +309,7 @@ async def register_webhooks(
 
 
 @router.get("/oura/subscriptions")
-async def get_subscriptions(current_user: CurrentUser):
+async def get_subscriptions(current_user: CurrentAdminUser):
     """List all active Oura webhook subscriptions (admin endpoint)."""
     try:
         subs = await list_subscriptions()

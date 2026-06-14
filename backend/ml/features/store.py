@@ -133,10 +133,7 @@ async def materialize_for_user(
     """
     import time
 
-    import pandas as pd
 
-    from app.core.time import utcnow_naive
-    from app.models.ml_features import MLFeatureValue
 
     timings: dict[str, float] = {}
 

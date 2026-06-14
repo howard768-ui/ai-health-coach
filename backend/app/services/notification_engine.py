@@ -8,12 +8,12 @@ All notifications follow the wiki rules:
 """
 
 import logging
-from datetime import datetime
 
 import anthropic
 
-from app.services.coach_engine import CoachEngine
+from app.services.coach_engine import CoachEngine, ModelTier
 from app.services.notification_media import generate_recovery_badge
+from app.services.notification_safety import safe_notification_text
 from app.core.time import utcnow_naive
 
 logger = logging.getLogger("meld.notifications")
@@ -76,12 +76,16 @@ class NotificationEngine:
         if rhr:
             data_summary += f", RHR: {rhr:.0f}bpm"
 
-        # Use CoachEngine for AI-generated content
+        # Use CoachEngine for AI-generated content. Explicit Sonnet tier:
+        # the query is a static template, and keyword routing on template
+        # wording is nondeterministic and can bill Opus. Safety can still
+        # escalate inside process_query. Audit P3/C3.
         try:
             result = self.coach.process_query(
                 query=MORNING_BRIEF_PROMPT.format(health_data=data_summary),
                 health_data=health_data,
                 user_name=user_name,
+                model_tier=ModelTier.SONNET,
             )
             response_text = result["response"]
 
@@ -92,9 +96,11 @@ class NotificationEngine:
                 title = content.get("title", f"Good morning, {user_name}")
                 body = content.get("body", "Your coach has an update for you.")
             except (json.JSONDecodeError, KeyError):
-                # Fallback: use the response as body
+                # Do NOT dump the raw model response to the lock screen (it can
+                # contain raw metrics / PHI). Use the static safe copy. Audit B1.
+                logger.warning("Failed to parse morning brief JSON; using safe fallback")
                 title = f"Good morning, {user_name}"
-                body = response_text[:120]
+                body = "Your coach has an update for you."
 
         except anthropic.APIError as e:
             logger.error("Failed to generate morning brief via AI: %s", e)
@@ -106,6 +112,12 @@ class NotificationEngine:
                 body = "Recovery is moderate. A lighter session might be best today."
             else:
                 body = "Your body needs some extra rest today. Easy does it."
+
+        # Deterministic safety net: never let a digit (raw metric / PHI) reach
+        # the lock screen even if the model ignored the prompt rule. Audit B1.
+        title, body = safe_notification_text(
+            title, body, f"Good morning, {user_name}", "Your coach has an update for you."
+        )
 
         # Generate recovery badge for rich notification.
         # P3-3: URLs come from settings, not hardcoded.

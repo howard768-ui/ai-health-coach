@@ -1,7 +1,7 @@
 appId: com.heymeld.app
 name: "Profile — Sign out alert cancels correctly"
 ---
-- runFlow: ../helpers/auth_bypass.yaml
+- runFlow: ../../helpers/auth_bypass.yaml
 
 - tapOn:
     id: "tab-you"

@@ -67,6 +67,26 @@ actor APIClient {
         config.timeoutIntervalForRequest = 45  // seconds per request
         config.timeoutIntervalForResource = 90  // seconds per resource (total)
         config.waitsForConnectivity = true     // queue during brief offline periods
+        // Audit P3/E6: every response from this session is PHI-bearing
+        // (dashboard, chat history, trends, meals, profile). The default
+        // shared URLCache writes responses to an on-disk cache that survives
+        // in device backups. Disable caching entirely; the app has its own
+        // view-model-level state and nothing here is cacheable-safe. Pairs
+        // with the backend's Cache-Control: no-store (defense-in-depth).
+        config.urlCache = nil
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        #if DEBUG
+        if UITestMode.isActive {
+            // UI-test runs (Maestro on CI) have no backend at 127.0.0.1:8000,
+            // so every request is doomed. At the 45s default each one hangs
+            // for the full timeout, stalling flows and producing 3-4x
+            // flow-time variance. Fail fast; the error states the app shows
+            // are exactly what the flows assert against.
+            config.timeoutIntervalForRequest = 5
+            config.timeoutIntervalForResource = 10
+            config.waitsForConnectivity = false
+        }
+        #endif
         self.session = URLSession(configuration: config)
     }
 
@@ -479,17 +499,20 @@ actor APIClient {
     }
 
     func fetchTrendPatterns(rangeDays: Int = 30) async throws -> APITrendPatternsResponse {
-        var components = URLComponents(
-            url: serverRoot.appendingPathComponent("api/trends/patterns"),
-            resolvingAgainstBaseURL: false
-        )!
-        components.queryItems = [URLQueryItem(name: "days", value: "\(rangeDays)")]
-        let request = URLRequest(url: components.url!)
-        let (data, response) = try await authedData(for: request)
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+        // Audit P3/E7 (round-2 A72): this was the one fetch left with the
+        // pre-PR-H force-unwraps and a raw authedData call (offline surfaced
+        // a raw URLError instead of .networkError). Match fetchTrends above:
+        // guard-throw URL construction + sendDecoding for uniform error
+        // mapping and decode handling.
+        let url = serverRoot.appendingPathComponent("api/trends/patterns")
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             throw APIError.serverError
         }
-        return try decoder.decode(APITrendPatternsResponse.self, from: data)
+        components.queryItems = [URLQueryItem(name: "days", value: "\(rangeDays)")]
+        guard let composed = components.url else {
+            throw APIError.serverError
+        }
+        return try await sendDecoding(URLRequest(url: composed))
     }
 
     // MARK: - Notifications
@@ -604,12 +627,38 @@ actor APIClient {
         return try await sendDecoding(request)
     }
 
+    /// Response from `POST /auth/oura/start`.
+    private struct OuraStartResponse: Decodable {
+        let authorize_url: String
+    }
+
+    /// Begin the Oura OAuth flow. POSTs to the authenticated
+    /// `/auth/oura/start`, which returns an Oura authorize URL carrying a
+    /// signed, single-user `state`. The caller opens the returned URL in
+    /// Safari. Audit P2d: replaces opening `/auth/oura` with no state (which
+    /// 422'd) / a client-supplied apple_user_id (CSRF-prone).
+    func startOuraConnect() async throws -> URL {
+        let url = serverRoot.appendingPathComponent("auth/oura/start")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        let (data, _) = try await authedData(for: request)
+        let decoded = try decoder.decode(OuraStartResponse.self, from: data)
+        guard let authorizeURL = URL(string: decoded.authorize_url) else {
+            throw APIError.decodingError
+        }
+        return authorizeURL
+    }
+
     func disconnectOura() async throws {
         let url = serverRoot.appendingPathComponent("api/user/oura")
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
 
-        let (_, response) = try await session.data(for: request)
+        // Route through authedData so the Authorization: Bearer header is
+        // attached (with 401 refresh+retry). Previously this used the raw
+        // session, so DELETE /api/user/oura (CurrentUser-gated) always 401'd
+        // and the disconnect silently no-op'd. Audit P2c.
+        let (_, response) = try await authedData(for: request)
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 204 else {
             throw APIError.serverError
@@ -709,7 +758,7 @@ struct APIDashboardResponse: Codable {
             ),
             coachInsight: CoachInsight(
                 message: coach_insight.message,
-                timestamp: ISO8601DateFormatter().date(from: coach_insight.timestamp) ?? Date()
+                timestamp: BackendDate.parse(coach_insight.timestamp) ?? Date()
             ),
             lastSynced: Date()
         )
@@ -1029,6 +1078,12 @@ struct APIUserProfile: Codable {
     let onboarding_complete: Bool?
     let target_weight_lbs: Double?
     let goals: [String]
+    // Audit P4/G: previously write-only on iOS. PUT could set the free-form
+    // onboarding goal text but the GET decode dropped it, so a profile
+    // round-trip lost what the user wrote (and a future edit screen had
+    // nothing to prefill). `var` with a nil default keeps the memberwise
+    // init backward compatible for existing call sites (incl. tests).
+    var custom_goal_text: String? = nil
     let training_experience: String?
     let training_days_per_week: Int?
     let member_since: String?

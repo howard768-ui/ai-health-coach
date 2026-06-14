@@ -11,7 +11,7 @@ Run: cd backend && uv run pytest tests/test_refresh_token_rotation.py -v
 """
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 import pytest
 import pytest_asyncio
@@ -169,7 +169,7 @@ async def test_revoke_chain_terminates_on_missing_descendant(db_session):
 @pytest.mark.asyncio
 async def test_revoke_chain_handles_empty_chain(db_session):
     """Calling _revoke_chain with a non-existent hash is a no-op (no crash)."""
-    user = await _make_user(db_session)
+    await _make_user(db_session)
     await db_session.flush()
 
     # Should not raise even though no token with this hash exists

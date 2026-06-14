@@ -20,7 +20,6 @@ os.environ.setdefault("JWT_SECRET_KEY", "test-jwt-secret-must-be-long-enough-for
 os.environ.setdefault("ENCRYPTION_KEY", "T0TXLkHFSeZRYGIIejSFVkhQrvRE-bWLkwXSkkdWiKQ=")
 os.environ.setdefault("ANTHROPIC_API_KEY", "fake-key-tests-dont-call-anthropic")
 
-from datetime import date
 
 import pytest
 import pytest_asyncio

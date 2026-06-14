@@ -1,7 +1,7 @@
 appId: com.heymeld.app
 name: "Meals — Search for a food item"
 ---
-- runFlow: ../helpers/auth_bypass.yaml
+- runFlow: ../../helpers/auth_bypass.yaml
 
 - tapOn:
     id: "tab-log"

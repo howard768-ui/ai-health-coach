@@ -5,8 +5,12 @@ name: Claude Code Review
 # Posts a review comment on every PR opened/synchronized. Checks for the
 # project-specific patterns below. NEVER merges. NEVER pushes. Only comments.
 #
-# Requires a `ANTHROPIC_API_KEY` repo secret. If the secret is missing, the
-# action will skip gracefully (no failure).
+# Requires a `ANTHROPIC_API_KEY` repo secret. The Claude review is a
+# REQUIRED gate in the HITL auto-merge poll (hitl-classifier.yml lists
+# "Claude PR Review" in REQUIRED). A missing secret must therefore FAIL
+# this job loudly, not skip: a green-on-missing-key skip would let the
+# classifier treat an un-run review as a passing gate and auto-merge
+# unreviewed code. See CLAUDE.md convention #9 (honest checks).
 
 on:
   pull_request:
@@ -36,18 +40,19 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Check API key is set
-        id: has_key
+      - name: Require API key
+        # Hard fail (not a green skip) when the secret is absent. This job is
+        # a REQUIRED auto-merge gate; skipping it silently would let unreviewed
+        # code merge. If this fires, the fix is to restore the repo secret at
+        # Settings -> Secrets and variables -> Actions, not to relax the gate.
         run: |
           if [ -z "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
-            echo "ANTHROPIC_API_KEY secret is not set; skipping review."
-            echo "has_key=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_key=true" >> "$GITHUB_OUTPUT"
+            echo "::error::ANTHROPIC_API_KEY secret is not set. The Claude review is a required auto-merge gate and must not be skipped. Add it at Settings -> Secrets and variables -> Actions -> New repository secret."
+            exit 1
           fi
+          echo "ANTHROPIC_API_KEY present; running review."
 
       - name: Run Claude review
-        if: steps.has_key.outputs.has_key == 'true'
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -111,8 +116,3 @@ jobs:
           claude_args: |
             --model claude-sonnet-4-5
             --max-turns 20
-
-      - name: Note skip if no API key
-        if: steps.has_key.outputs.has_key == 'false'
-        run: |
-          echo "::warning::Skipped Claude review: ANTHROPIC_API_KEY secret is not set on this repo. Add it at Settings -> Secrets and variables -> Actions -> New repository secret."

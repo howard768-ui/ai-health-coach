@@ -13,13 +13,12 @@ Sources:
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.notification import NotificationRecord, NotificationPreference
-from app.core.time import utcnow_naive
 
 logger = logging.getLogger("meld.anti_fatigue")
 
@@ -196,7 +195,11 @@ async def check_preference(db: AsyncSession, user_id: str, category: str) -> boo
     if hasattr(pref, category):
         enabled = getattr(pref, category)
         if not enabled:
-            logger.info("Category %s disabled in preferences for user %s", category, user_id)
+            logger.info(
+                "Category %s disabled in preferences for user %s",
+                category,
+                user_id[:12] + "...",
+            )
         return enabled
 
     return True

@@ -21,11 +21,10 @@ import httpx
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from slowapi import Limiter
-from slowapi.util import get_remote_address
+from app.core.ratelimit import limiter
 
 from app.api.deps import CurrentUser
 from app.core.apple import (
@@ -35,11 +34,11 @@ from app.core.apple import (
     verify_apple_server_notification,
 )
 from app.core.security import (
-    REFRESH_TOKEN_EXPIRE_DAYS,
     create_access_token,
     create_refresh_token,
     hash_refresh_token,
 )
+from app.config import settings
 from app.database import get_db
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
@@ -51,7 +50,8 @@ logger = logging.getLogger("meld.auth")
 # Per-IP rate limiter shared across auth endpoints. Tighter than the
 # global default — auth endpoints are the highest-value attack surface
 # (brute force, token enumeration, cost exhaustion via Apple JWT verify).
-limiter = Limiter(key_func=get_remote_address)
+# Uses the single shared limiter (app.core.ratelimit), keyed on the real client
+# IP, not the Cloudflare edge IP. Audit C2.
 
 
 # ── Request / Response Schemas ───────────────────────────────────────────────
@@ -147,6 +147,47 @@ async def _revoke_chain(db: AsyncSession, start_hash: str) -> None:
     await db.flush()
 
 
+# ── POST /auth/dev-login (development/test only) ─────────────────────────────
+
+# Fixed identity for UI-test runs. The iOS client fires POST /auth/dev-login
+# (no body) under -uitesting-skip-auth (MeldApp fire-and-forget; client side
+# shipped long before this route existed). The E2E seed script
+# (app/scripts/seed_e2e.py) MUST seed data for this same id; it imports the
+# constant from here.
+DEV_LOGIN_USER_ID = "000000.devlogin0000000000000000000000.0001"
+
+
+@router.post("/dev-login", response_model=TokenPair)
+async def dev_login(db: AsyncSession = Depends(get_db)) -> TokenPair:
+    """Mint a real token pair for the fixed dev user. CI/E2E only.
+
+    Gated on the same env tuple as encryption/secrets/ratelimit (is_prod
+    idiom): anything that is not explicitly development or test gets a 404,
+    so a misspelled APP_ENV fails closed and the route is invisible in
+    production. No request body: the shipped iOS client POSTs empty with no
+    Content-Type. No rate-limit decorator: the limiter is disabled in
+    development/test, and adding one would 429 the per-flow relaunches.
+    """
+    if settings.app_env.strip().lower() not in ("development", "test"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    result = await db.execute(
+        select(User).where(User.apple_user_id == DEV_LOGIN_USER_ID)
+    )
+    user = result.scalar_one_or_none()
+    if user is None:
+        user = User(
+            apple_user_id=DEV_LOGIN_USER_ID,
+            name="Dev",
+            is_active=True,
+            onboarding_complete=True,
+        )
+        db.add(user)
+        await db.flush()
+
+    return await _issue_token_pair(db, user, None)
+
+
 # ── POST /auth/apple ─────────────────────────────────────────────────────────
 
 
@@ -236,7 +277,7 @@ async def refresh_token(
         # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
         logger.warning(
             "Refresh token reuse detected for user=%s; revoking chain",
-            row.user_id,
+            row.user_id[:12] + "...",
         )
         await _revoke_chain(db, token_hash)
         # Also revoke every other active refresh token for this user as a precaution.
@@ -315,6 +356,36 @@ async def logout(
 # ── POST /auth/delete ────────────────────────────────────────────────────────
 
 
+# Per-user PHI tables keyed by user_id that have NO foreign key to users, so a
+# CASCADE delete of the user row does not remove them. These must be purged
+# explicitly on account deletion (audit A3 / round-1 critical right-to-erasure).
+# Cohort data (ml_anonymized_vectors / ml_cohort_consent) is handled separately
+# via ml.api.delete_cohort_vectors because it is keyed by an encrypted pseudonym.
+# Raw table names (no ORM import) keep the ML import boundary clean, matching
+# the ml_ops.py pattern.
+_PER_USER_PHI_TABLES_NO_FK = (
+    "ml_baselines",
+    "ml_change_points",
+    "ml_forecasts",
+    "ml_anomalies",
+    "ml_directional_tests",
+    "ml_causal_estimates",
+    "ml_feature_values",
+    "ml_insight_candidates",
+    "ml_rankings",
+    # ml_n_of_1_results has a RESTRICT FK to ml_experiments, so with SQLite FK
+    # enforcement now on (database.py) the child MUST be deleted before the
+    # parent or the DELETE FROM ml_experiments raises and blocks the whole
+    # account deletion. Order matters here.
+    "ml_n_of_1_results",
+    "ml_experiments",
+    "user_mascot_state",
+    "notification_records",
+    "device_tokens",
+    "notification_preferences",
+)
+
+
 @router.post("/delete")
 @limiter.limit("3/minute")
 async def delete_account(
@@ -329,8 +400,10 @@ async def delete_account(
     Steps:
     1. Call Apple's /auth/revoke with the user's Apple refresh token (if we
        have one captured from the original sign-in).
-    2. DELETE the user row — CASCADE removes all tenant data across the 13
-       tables per the FK migration in c0518b5194eb.
+    2. Purge cohort vectors + every per-user PHI table that has no FK to users
+       (the ml_*/notification/mascot tables CASCADE does not reach).
+    3. DELETE the user row — CASCADE removes the FK-linked tenant tables (the
+       c0518b5194eb set), now that SQLite FK enforcement is on (see database.py).
     """
     apple_id = user.apple_user_id
     apple_refresh = user.apple_refresh_token
@@ -354,7 +427,28 @@ async def delete_account(
             except Exception:  # noqa: BLE001 -- delete continues regardless
                 logger.debug("Sentry capture failed (non-fatal)", exc_info=True)
 
-    # Delete the user — CASCADE handles all tenant data + refresh tokens.
+    # Purge cohort vectors (keyed by encrypted pseudonym) via the ML boundary.
+    # Wrap in a SAVEPOINT so a cohort-purge failure rolls back only this step
+    # and cannot poison the session for the rest of the deletion (the local
+    # delete must complete per App Store 5.1.1(v)).
+    try:
+        from ml import api as ml_api
+
+        async with db.begin_nested():
+            await ml_api.delete_cohort_vectors(db, apple_id)
+    except Exception as e:  # noqa: BLE001 -- cohort purge must not block deletion
+        logger.error("Cohort vector purge failed for user=%s: %s", apple_id[:12], e)
+
+    # Purge every per-user PHI table CASCADE does not reach. Table names are
+    # fixed constants, not user input, so the f-string is not an injection site.
+    for table in _PER_USER_PHI_TABLES_NO_FK:
+        await db.execute(
+            text(f"DELETE FROM {table} WHERE user_id = :uid"),  # noqa: S608
+            {"uid": apple_id},
+        )
+
+    # Delete the user — CASCADE handles the FK-linked tenant tables + refresh
+    # tokens (FK enforcement is on for SQLite via database.py; native on PG).
     await db.delete(user)
     await db.commit()
     logger.info("Deleted user account: %s", apple_id[:12] + "...")
@@ -423,5 +517,9 @@ async def apple_server_notification(request: Request, db: AsyncSession = Depends
         if user is not None and user.is_active:
             user.is_active = False
             await db.commit()
-            logger.info("Deactivated user %s on %s notification", apple_user_id, event_type)
+            logger.info(
+                "Deactivated user %s on %s notification",
+                apple_user_id[:12] + "...",
+                event_type,
+            )
     return {"status": "ok", "type": event_type}

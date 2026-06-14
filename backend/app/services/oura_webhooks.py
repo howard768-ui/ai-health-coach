@@ -13,16 +13,11 @@ Data types: daily_sleep, daily_readiness, daily_activity, daily_spo2,
 """
 
 import logging
-import secrets
-from datetime import datetime
 
 import httpx
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.http import DEFAULT_TIMEOUT
-from app.services.oura_sync import sync_user_data
 
 logger = logging.getLogger("meld.oura_webhooks")
 

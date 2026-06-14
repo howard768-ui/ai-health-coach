@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select, update
@@ -256,7 +256,7 @@ async def run_clustering_pipeline(
         return report
 
     vectors = np.array([json.loads(r.vector_json) for r in rows], dtype=np.float64)
-    pseudonym_ids = [r.pseudonym_id for r in rows]
+    [r.pseudonym_id for r in rows]
     feature_names = json.loads(rows[0].feature_names_json)
     report.n_users = len(vectors)
 

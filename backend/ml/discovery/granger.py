@@ -30,7 +30,6 @@ from sqlalchemy import select
 
 if TYPE_CHECKING:
     import numpy as np
-    import pandas as pd
     from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
@@ -135,7 +134,10 @@ def _run_granger_test(
 ) -> tuple[float | None, float | None, int | None]:
     """Run Granger causality: does source Granger-cause target?
 
-    Returns (best_f, best_p, optimal_lag) across lags 1..max_lag.
+    Returns (best_f, best_p, optimal_lag) across lags 1..max_lag, where
+    best_p is Bonferroni-corrected by the number of lags actually evaluated
+    (selecting the minimum raw p across several lags is a multiple-comparison
+    problem; downstream significance gates consume this value directly).
     Returns (None, None, None) if the test cannot be run.
     """
     import numpy as np
@@ -163,6 +165,7 @@ def _run_granger_test(
     best_f = None
     best_p = None
     best_lag = None
+    lags_evaluated = 0
 
     for lag_order in range(1, effective_max_lag + 1):
         if lag_order not in results:
@@ -172,11 +175,22 @@ def _run_granger_test(
         f_test = test_result[0].get("ssr_ftest")
         if f_test is None:
             continue
+        lags_evaluated += 1
         f_stat, p_val = f_test[0], f_test[1]
         if best_p is None or p_val < best_p:
             best_f = float(f_stat)
             best_p = float(p_val)
             best_lag = lag_order
+
+    # Bonferroni-correct for lag selection. Taking the minimum p across up
+    # to 7 correlated tests without correction inflates the false-positive
+    # rate to roughly 30% under independence; the uncorrected minimum then
+    # gated L4 causal discovery and flowed into coach-cited insights.
+    # Audit P3/D2 (round-1 #33). Correcting by the number of lags actually
+    # evaluated is conservative for correlated tests, which is the right
+    # direction for evidence the coach presents as causal support.
+    if best_p is not None and lags_evaluated > 1:
+        best_p = min(1.0, best_p * lags_evaluated)
 
     return best_f, best_p, best_lag
 

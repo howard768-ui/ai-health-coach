@@ -44,7 +44,7 @@ final class MealsViewModel {
                 date: Date(),
                 meals: response.meals.map { apiMeal in
                     Meal(
-                        date: ISO8601DateFormatter().date(from: apiMeal.created_at) ?? Date(),
+                        date: BackendDate.parse(apiMeal.created_at) ?? Date(),
                         mealType: MealType(rawValue: apiMeal.meal_type.capitalized) ?? .fromTime(Date()),
                         items: apiMeal.items.map { $0.toFoodItem() },
                         source: InputSource(rawValue: apiMeal.source) ?? .manual
@@ -140,6 +140,12 @@ final class MealsViewModel {
 
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
+        // en_US_POSIX pins the Gregorian calendar + ASCII digits: without it,
+        // a device set to a non-Gregorian calendar (Buddhist, Japanese) makes
+        // "yyyy" render e.g. 2569 and the backend stores meals on the wrong
+        // date. Time zone stays device-local on purpose: the meal "date" is
+        // the user's local calendar day. Audit P3/E7.
+        f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd"
         return f
     }()

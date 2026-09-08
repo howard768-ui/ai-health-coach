@@ -60,7 +60,7 @@ jobs:
       EXPORT_PATH: ./build/export
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 2  # need HEAD + HEAD^ for commit message
 

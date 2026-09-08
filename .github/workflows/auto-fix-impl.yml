@@ -70,7 +70,7 @@ jobs:
 
       - name: Checkout (full history for branch creation)
         if: steps.killswitch.outputs.enabled == 'true' && steps.secret.outputs.present == 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           # Use default GITHUB_TOKEN so the agent can push branches.

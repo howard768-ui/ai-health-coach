@@ -69,7 +69,7 @@ jobs:
       DESTINATION: 'platform=iOS Simulator,name=iPhone 16 Pro'
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Show available Xcode versions
         run: |
@@ -296,7 +296,7 @@ jobs:
       MAESTRO_CLI_NO_ANALYTICS: "1"
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Maestro
         # Pinned: the unpinned installer drifts (cli-2.6.1 shipped mid-debug
@@ -505,7 +505,7 @@ jobs:
       ANTHROPIC_API_KEY: "ci-dummy-key"
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Maestro
         run: |
@@ -631,7 +631,7 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install SwiftLint
         run: brew install swiftlint
@@ -651,7 +651,7 @@ jobs:
     timeout-minutes: 3
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Forbid token values in print/Log statements
         # Audit follow-up (2026-06-12), iOS twin of the backend

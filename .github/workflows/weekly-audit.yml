@@ -17,9 +17,10 @@ name: Weekly Audit
 #   pass.
 
 on:
-  schedule:
-    # Mondays 13:00 UTC (9am ET)
-    - cron: '0 13 * * 1'
+  # PAUSED 2026-09-08 (automation audit): cron schedule commented out; workflow_dispatch still works. To resume, uncomment the schedule block below and re-enable the workflow in the Actions tab.
+  # schedule:
+  # # Mondays 13:00 UTC (9am ET)
+  # - cron: '0 13 * * 1'
   workflow_dispatch:
 
 permissions:

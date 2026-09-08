@@ -9,7 +9,7 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0   # PAUSED 2026-09-08 (automation audit): was 5; 0 stops version-update PRs
     labels:
       - "type/maintenance"
       - "source/routine"
@@ -22,7 +22,7 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 0   # PAUSED 2026-09-08 (automation audit): was 3; 0 stops version-update PRs
     labels:
       - "type/maintenance"
       - "source/routine"
@@ -35,7 +35,7 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 0   # PAUSED 2026-09-08 (automation audit): was 3; 0 stops version-update PRs
     labels:
       - "type/maintenance"
     commit-message:
@@ -47,7 +47,7 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 0   # PAUSED 2026-09-08 (automation audit): was 3; 0 stops version-update PRs
     labels:
       - "type/maintenance"
     commit-message:

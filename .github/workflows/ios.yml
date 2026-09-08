@@ -34,8 +34,9 @@ on:
   # set (the maestro-backend job below only runs on non-PR events). Scheduled
   # in idle hours so the ~80 macOS runner minutes do not deepen the daytime
   # queue (CLAUDE.md convention 11).
-  schedule:
-    - cron: '0 8 * * *'
+  # PAUSED 2026-09-08 (automation audit): cron schedule commented out; workflow_dispatch still works. To resume, uncomment the schedule block below and re-enable the workflow in the Actions tab.
+  # schedule:
+  # - cron: '0 8 * * *'
 
 # Cancel any in-flight run for the same workflow + ref, but only for PRs.
 # Saves runner minutes when a PR pushes new commits faster than CI completes.

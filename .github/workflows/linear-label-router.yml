@@ -15,8 +15,9 @@ name: Linear Label Router (Cron)
 # label is manually cleared.
 
 on:
-  schedule:
-    - cron: '*/5 * * * *'   # every 5 min, on the 5
+  # PAUSED 2026-09-08 (automation audit): cron schedule commented out; workflow_dispatch still works. To resume, uncomment the schedule block below and re-enable the workflow in the Actions tab.
+  # schedule:
+  # - cron: '*/5 * * * *'   # every 5 min, on the 5
   workflow_dispatch: {}     # for ad-hoc manual trigger
 
 permissions:

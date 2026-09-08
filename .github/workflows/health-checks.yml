@@ -22,12 +22,13 @@ name: Health Checks (Cron)
 #   - ssl-dns-check (1st and 15th)     meld-ssl-dns-check
 
 on:
-  schedule:
-    - cron: '13 */4 * * *'      # backend-health, every 4h at :13 past
-    - cron: '18 11 * * *'       # website-health, daily 07:18 EDT
-    - cron: '40 11 * * *'       # pipeline-health, daily 07:40 EDT
-    - cron: '54 9 * * *'        # data-quality, daily 05:54 EDT
-    - cron: '0 12 1,15 * *'     # ssl-dns-check, biweekly 08:00 EDT
+  # PAUSED 2026-09-08 (automation audit): cron schedule commented out; workflow_dispatch still works. To resume, uncomment the schedule block below and re-enable the workflow in the Actions tab.
+  # schedule:
+  # - cron: '13 */4 * * *'      # backend-health, every 4h at :13 past
+  # - cron: '18 11 * * *'       # website-health, daily 07:18 EDT
+  # - cron: '40 11 * * *'       # pipeline-health, daily 07:40 EDT
+  # - cron: '54 9 * * *'        # data-quality, daily 05:54 EDT
+  # - cron: '0 12 1,15 * *'     # ssl-dns-check, biweekly 08:00 EDT
   workflow_dispatch:
     inputs:
       check:
